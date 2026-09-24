@@ -4,12 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun run --watch src/index.ts",
+    "dev": "CROW_ALLOWED_ORIGINS=http://localhost:5173 bun run --watch src/index.ts",
     "build": "bun build src/index.ts --outdir dist --target bun",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test"
   },
   "dependencies": {
+    "@crow/adapter-claude": "workspace:*",
     "@crow/core": "workspace:*"
   }
 }

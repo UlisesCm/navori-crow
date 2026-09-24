@@ -15,6 +15,7 @@
       "name": "@crow/server",
       "version": "0.0.0",
       "dependencies": {
+        "@crow/adapter-claude": "workspace:*",
         "@crow/core": "workspace:*",
       },
     },

@@ -4,7 +4,8 @@
     "types": ["bun"],
     "noEmit": true,
     "paths": {
-      "@crow/core": ["../../packages/core/src/index.ts"]
+      "@crow/core": ["../../packages/core/src/index.ts"],
+      "@crow/adapter-claude": ["../../packages/adapters/claude/src/index.ts"]
     }
   },
   "include": ["src/**/*.ts"]

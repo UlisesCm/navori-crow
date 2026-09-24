@@ -7,6 +7,7 @@ import { bindAdapter } from "../adapter";
 import { EventBus } from "../bus";
 import { migrate } from "../store/migrations";
 import { createUlidFactory } from "../ulid";
+import { readLines } from "./line-reader";
 import { Scheduler, TailerScheduler } from "./tailer";
 import type { IntervalScheduler } from "./tailer";
 import { makeTestAdapter, testLine } from "./testing/test-adapter";
@@ -151,7 +152,7 @@ describe("TailerScheduler: injectable timers and stop() (D4, D6)", () => {
       await scheduler.start();
       expect(fake.cancelled).toEqual([false, false]);
 
-      scheduler.stop();
+      await scheduler.stop();
       expect(fake.cancelled).toEqual([true, true]);
     });
   });
@@ -189,7 +190,118 @@ describe("TailerScheduler: injectable timers and stop() (D4, D6)", () => {
       await fake.tick(1000); // drive the poll tick manually — no real timer, no sleep
 
       expect(received).toHaveLength(1); // nothing new to ingest, but it didn't throw or duplicate
-      scheduler.stop();
+      await scheduler.stop();
+    });
+  });
+
+  test("stop() doesn't resolve until an in-flight drain step finishes, and no step starts after it", async () => {
+    // Covers: R6 — stop() must never let the DB close (app.ts's shutdown order)
+    // while a step is still mid-read/write against it.
+    await withTempDir(async (dir) => {
+      const db = freshDb();
+      const bus = new EventBus();
+      const adapter = bindAdapter(makeTestAdapter());
+      const fake = fakeIntervalScheduler();
+
+      let releaseRead: (() => void) | null = null;
+      const gate = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      let readCalls = 0;
+      const blockingRead: typeof readLines = async (readPath, offset, options) => {
+        readCalls += 1;
+        if (readCalls === 1) await gate; // only the hinted step below hits this; start() sees an empty dir
+        return readLines(readPath, offset, options);
+      };
+
+      const scheduler = new TailerScheduler({
+        db,
+        bus,
+        roots: [{ root: dir, adapter }],
+        nextId: createUlidFactory("00000000000000000000000000", () => NOW),
+        now: () => NOW,
+        idleMs: 5 * 60_000,
+        backfillWindowMs: 24 * 60 * 60_000,
+        pollIntervalMs: 1000,
+        rescanIntervalMs: 30_000,
+        scheduleInterval: fake.scheduleInterval,
+        read: blockingRead,
+      });
+
+      // start() sees an empty directory, so its own backfill pass never calls
+      // `read` — it resolves normally and arms both timers.
+      await scheduler.start();
+      expect(fake.cancelled).toEqual([false, false]);
+
+      const path = join(dir, "hot.jsonl");
+      writeFileSync(path, `${testLine({ sessionId: "s1", ts: NOW, text: "hello" })}\n`);
+
+      scheduler.hint(path);
+      const stepPromise = scheduler.runPendingSteps(); // starts draining; blocks on `gate` inside `read`
+
+      // Let the microtask queue reach the blocked `read` call before racing `stop()`.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      let stopSettled = false;
+      const stopPromise = scheduler.stop().then(() => {
+        stopSettled = true;
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(stopSettled).toBe(false); // stop() must still be waiting on the in-flight step
+
+      releaseRead!();
+      await stopPromise;
+      expect(stopSettled).toBe(true); // only settles once the step actually finished
+      await stepPromise;
+
+      const stored = db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM events").get();
+      expect(stored?.n).toBe(1); // the blocked step really did run to completion before stop() resolved
+
+      // stop() already cancelled both timers; nothing new can be scheduled afterward.
+      expect(fake.cancelled).toEqual([true, true]);
+    });
+  });
+
+  test("stop() neither hangs nor rejects when the in-flight step itself throws", async () => {
+    // Covers: R6
+    await withTempDir(async (dir) => {
+      const path = join(dir, "hot.jsonl");
+      writeFileSync(path, `${testLine({ sessionId: "s1", ts: NOW, text: "hello" })}\n`);
+
+      const db = freshDb();
+      const bus = new EventBus();
+      const adapter = bindAdapter(makeTestAdapter());
+      const fake = fakeIntervalScheduler();
+
+      const failingRead: typeof readLines = async () => {
+        throw new Error("boom: simulated read failure");
+      };
+
+      const scheduler = new TailerScheduler({
+        db,
+        bus,
+        roots: [{ root: dir, adapter }],
+        nextId: createUlidFactory("00000000000000000000000000", () => NOW),
+        now: () => NOW,
+        idleMs: 5 * 60_000,
+        backfillWindowMs: 24 * 60 * 60_000,
+        pollIntervalMs: 1000,
+        rescanIntervalMs: 30_000,
+        scheduleInterval: fake.scheduleInterval,
+        read: failingRead,
+      });
+
+      // start()'s own initial backfill pass hits the failing `read` and
+      // rejects — the test owns that rejection so it never becomes an
+      // unhandled rejection.
+      await expect(scheduler.start()).rejects.toThrow("boom");
+
+      await scheduler.stop(); // must resolve cleanly despite the failed step
     });
   });
 });

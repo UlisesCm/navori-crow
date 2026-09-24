@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-24 16:41 — orchestrator — F1: lote B5.T1 (arranque del servidor y guard)
+- Cambios: `apps/server/src/adapters.ts` (`ENGINE_ADAPTERS` con Claude), `app.ts` (`startApp` en el orden del diseño: DB y migración, semilla del ULID y `sweepIdle`, `Bun.serve` en loopback, tailer y sweeper; `stop()` apaga sweeper, tailer, servidor y DB en ese orden), `guard.ts` (Host y Origin según D14), `server.ts` (`isApiPath` como único predicado para el guard; `/healthz` y estáticos fuera), `index.ts` con `loadConfig`, y modo dev (Vite en 5173 con `strictPort`, `CROW_ALLOWED_ORIGINS`). En core, `TailerScheduler.stop()` pasa a async y espera el paso en curso sin relanzar su error. `tasks.md` marca B1.T1–B4.T2, que ya estaban mergeados, y B5.T1. Cubre R2 y R28.
+- Quality gate: ✅ `bun run check` verde (155 pass / 0 fail), Pass 2 del reviewer.
+- Notas: la primera revisión pidió un test que probara que `stop()` espera el paso en curso; al escribirlo apareció que un paso fallido hacía fallar `stop()`, y se corrigió. El error del paso sigue llegando a quien lo esperaba. Bun normaliza `//api/x` a `/api/x` antes de `fetch` (lo prueba un test contra el servidor real); `/API/x` cae a estáticos y da 404. Notas informativas del reviewer: los tests nuevos del scheduler llevan `// Covers: R6`, que no es el requisito que prueban, y el poll periódico sigue llamando `runPendingSteps()` sin esperar la promesa (previo a este lote).
+- Commit / PR: feat/f1-b5-server
+
 ## 2026-09-24 15:55 — orchestrator — F1: lote B4.T3 (fixture real de Claude y regla de usage)
 - Cambios: anonimizador `scripts/anonymize-fixture.ts` (workspace `scripts`), fixture real anonimizado `fixtures/claude/cc-2.1.281/` (sesión principal y 5 subagentes async), `fixtures/hygiene.test.ts` (sin PII y contrato estructural), `claude/contract.test.ts` con oráculo propio y snapshot. `map-line.ts` mapea el fin de subagente async de 2.1.281 (`attachment` `queued_command` con `commandMode: "task-notification"`) sin romper la forma anterior. Regla D7/R13 nueva: por `(agente, message.id)` el usage contado es el máximo por componente, una línea mayor suma solo el delta y `usage-anomaly` queda para cuando un componente decrece; migración v2 aditiva del store (`u_*` en `dedupe`). Cubre R11–R13.
 - Quality gate: ✅ `bun run check` verde (134 pass / 0 fail), Pass 2 del reviewer.
