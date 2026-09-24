@@ -10,9 +10,13 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
+    // Fixed dev port (D14): the server's CROW_ALLOWED_ORIGINS only trusts
+    // this one origin, so a silently-bumped port would fail the guard.
+    port: 5173,
+    strictPort: true,
     proxy: {
-      "/healthz": `http://127.0.0.1:${serverPort}`,
-      "/api": `http://127.0.0.1:${serverPort}`,
+      "/healthz": { target: `http://127.0.0.1:${serverPort}`, changeOrigin: false },
+      "/api": { target: `http://127.0.0.1:${serverPort}`, changeOrigin: false },
     },
   },
 });
