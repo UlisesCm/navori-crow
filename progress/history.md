@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-24 15:55 — orchestrator — F1: lote B4.T3 (fixture real de Claude y regla de usage)
+- Cambios: anonimizador `scripts/anonymize-fixture.ts` (workspace `scripts`), fixture real anonimizado `fixtures/claude/cc-2.1.281/` (sesión principal y 5 subagentes async), `fixtures/hygiene.test.ts` (sin PII y contrato estructural), `claude/contract.test.ts` con oráculo propio y snapshot. `map-line.ts` mapea el fin de subagente async de 2.1.281 (`attachment` `queued_command` con `commandMode: "task-notification"`) sin romper la forma anterior. Regla D7/R13 nueva: por `(agente, message.id)` el usage contado es el máximo por componente, una línea mayor suma solo el delta y `usage-anomaly` queda para cuando un componente decrece; migración v2 aditiva del store (`u_*` en `dedupe`). Cubre R11–R13.
+- Quality gate: ✅ `bun run check` verde (134 pass / 0 fail), Pass 2 del reviewer.
+- Notas: el fixture se nombra por la versión real (`cc-2.1.281`, no `cc-2.1.267`). Claude Code reemite el mismo `message.id` durante el streaming con `output_tokens` creciente; "primero gana" contaba 30,170 de 38,161 tokens de salida (−21%) y el adaptador descartaba 20 de las 22 continuaciones por ser solo `tool_use`. El anonimizador ahora anonimiza también claves de objeto (preguntas de AskUserQuestion, ids de modelo). El reviewer dejó dos notas informativas: la allowlist de claves del anonimizador no está acotada por ruta, y el crecimiento de usage por `message.id` solo lo prueba el fixture real, sin test sintético.
+- Commit / PR: feat/f1-b4t3-fixture-claude
+
 ## 2026-09-24 13:30 — orchestrator — F1: lote B4.T1+T2 (adaptador Claude)
 - Cambios: paquete nuevo `packages/adapters/claude` (`@crow/adapter-claude`: `adapter.ts`, `map-line.ts`, `sidecar.ts`) según § Mapeo Claude; fixture `fixtures/claude/navori-audit/` copiado literal de navori-harness; `store.ts` resuelve `parentAgentId` por `call_id` para `depth > 1` en ambos órdenes de procesamiento (cierra lo que B2 difirió). Cubre R11–R13, R15, R16.
 - Quality gate: ✅ `bun run check` verde (108 pass / 0 fail), Pass 2 del reviewer.
