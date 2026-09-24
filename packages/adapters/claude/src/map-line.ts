@@ -94,6 +94,30 @@ function extractXmlTag(text: string, tag: string): string | null {
   return match !== null ? match[1]!.trim() : null;
 }
 
+/**
+ * Shared by both task-notification shapes (design.md § Mapeo Claude): the older `user` line whose
+ * `message.content` carries the XML-ish text directly, and the `cc-2.1.281` `attachment`/
+ * `queued_command` line whose `attachment.prompt` carries the same tags. Resolves `<tool-use-id>` to
+ * the spawned agentId via `spawned` (filled in on `async_launched`) and pushes `agent.stop`.
+ * Idempotent: once a `toolUseId` is consumed here, it's dropped from `spawned`, so a duplicate
+ * notification for the same call (e.g. a `queue-operation` echo, or two `attachment` lines for the
+ * same subagent) is a silent no-op — never a second `agent.stop`.
+ */
+function stopFromNotificationText(
+  text: string,
+  spawned: ClaudeState["spawned"],
+  ts: number,
+  push: (ev: Push) => void,
+): ClaudeState["spawned"] {
+  const toolUseId = extractXmlTag(text, "tool-use-id");
+  const status = extractXmlTag(text, "status");
+  const spawnedAgentId = toolUseId !== null ? spawned[toolUseId] : undefined;
+  if (toolUseId === null || status === null || typeof spawnedAgentId !== "string") return spawned;
+  const outcome = status === "completed" ? "completed" : status === "killed" ? "killed" : "failed";
+  push({ kind: "agent.stop", ts, agentId: spawnedAgentId, agent: { outcome } });
+  return dropKey(spawned, toolUseId);
+}
+
 /** D15: recursively trims a tool's `input` — strings to 1 KiB, depth to 3, and 30 entries per level. */
 function trimInput(value: unknown, depth = 0): unknown {
   if (depth >= 3) return typeof value === "object" && value !== null ? "[truncated]" : value;
@@ -112,9 +136,12 @@ function trimInput(value: unknown, depth = 0): unknown {
   return value;
 }
 
-/** Known line types that carry no mappable event (design.md § Evidencia, "de estado, sin evento"). */
+/** Known line types that carry no mappable event (design.md § Evidencia, "de estado, sin evento").
+ * `attachment` is NOT here: it gets its own branch in {@link mapClaudeLine} (`mapAttachment`) because
+ * one of its subtypes (`queued_command` + `commandMode: "task-notification"`) is a real async
+ * subagent completion signal (design.md § Mapeo Claude, "cc-2.1.281"). Every other `attachment`
+ * subtype still yields no event, same as before. */
 const KNOWN_NO_EVENT_TYPES = new Set([
-  "attachment",
   "last-prompt",
   "mode",
   "ai-title",
@@ -174,14 +201,21 @@ function mapAssistant(
   const alreadySeen = messageId !== null && messageId in state.seenMessageIds;
   const isFirstOfId = messageId !== null && !alreadySeen;
 
-  if (hasText || isFirstOfId) {
+  const usage = readUsage(message.usage, model) ?? undefined;
+  const usageKey =
+    usage !== undefined && messageId !== null ? `u:${agentId ?? "main"}:${messageId}` : undefined;
+  // Push whenever there's text/thinking, it's the first line of this `message.id`, OR it carries
+  // usage at all — a streamed `tool_use`-only continuation line for an already-seen id (no text,
+  // not first) still needs to reach the store so its usage's component-wise MAX can be tracked
+  // (design.md D7, round 4: real Claude keeps re-emitting `output_tokens` growth across such
+  // continuations; dropping them silently under-counted output by ~21% on the real fixture).
+  // `tool.pre` (pushed below, per `tool_use` block) never carries `usage`/`usageKey`, so there's no
+  // risk of double-counting between the two.
+  if (hasText || isFirstOfId || usage !== undefined) {
     const textParts = contentBlocks
       .filter((b) => b.type === "text" && typeof b.text === "string")
       .map((b) => b.text as string);
     const text = textParts.length > 0 ? textParts.join("").slice(0, 8192) : undefined;
-    const usage = readUsage(message.usage, model) ?? undefined;
-    const usageKey =
-      usage !== undefined && messageId !== null ? `u:${agentId ?? "main"}:${messageId}` : undefined;
     push({ kind: "assistant.message", ts, text, usage, usageKey });
   }
 
@@ -266,18 +300,11 @@ function mapUser(
   const origin = parsed.origin;
   const isTaskNotification = isRec(origin) && origin.kind === "task-notification";
   if (isTaskNotification && typeof contentVal === "string") {
-    // Real Claude's task-notification line carries its payload as an XML-ish string inside
-    // `message.content` (design.md § Mapeo Claude: "<tool-use-id>" + "<status>"), not as
-    // top-level fields.
-    const toolUseId = extractXmlTag(contentVal, "tool-use-id");
-    const status = extractXmlTag(contentVal, "status");
-    const spawnedAgentId = toolUseId !== null ? spawned[toolUseId] : undefined;
-    if (toolUseId !== null && status !== null && typeof spawnedAgentId === "string") {
-      const outcome =
-        status === "completed" ? "completed" : status === "killed" ? "killed" : "failed";
-      push({ kind: "agent.stop", ts, agentId: spawnedAgentId, agent: { outcome } });
-      spawned = dropKey(spawned, toolUseId);
-    }
+    // Older Claude builds carry the task-notification payload as an XML-ish string inside
+    // `message.content` (design.md § Mapeo Claude: "<tool-use-id>" + "<status>"), not as top-level
+    // fields. `cc-2.1.281` moved this to an `attachment` line instead — see `mapAttachment` — but
+    // this shape is kept working too.
+    spawned = stopFromNotificationText(contentVal, spawned, ts, push);
   }
 
   const handled = toolResultBlocks.length > 0 || isRec(toolUseResult) || isTaskNotification;
@@ -302,6 +329,35 @@ function mapUser(
   }
 
   return { openCalls, spawned };
+}
+
+/**
+ * `type: "attachment"` line (design.md § Mapeo Claude, "cc-2.1.281"). Only one subtype carries an
+ * event: `attachment.type === "queued_command"` with `attachment.commandMode ===
+ * "task-notification"` is the real async subagent completion signal in current Claude Code builds —
+ * its `attachment.prompt` string holds the same `<tool-use-id>`/`<status>` tags the older
+ * `origin.kind: "task-notification"` `user` line carried in `message.content`. The matching
+ * `queue-operation` lines that echo the same tags (enqueue/dequeue bookkeeping) are deliberately left
+ * unmapped (`KNOWN_NO_EVENT_TYPES`) rather than given their own stop path: `stopFromNotificationText`
+ * is idempotent by construction (D7-style, via `spawned`), so even if a `queue-operation` were mapped
+ * too, processing order couldn't double-stop — but there's no evidence Claude ever needs it to, so it
+ * stays a no-op line (YAGNI). Every other `attachment` subtype yields no event, same as before this
+ * type got its own branch.
+ */
+function mapAttachment(
+  parsed: Rec,
+  ts: number,
+  spawned: ClaudeState["spawned"],
+  push: (ev: Push) => void,
+): ClaudeState["spawned"] {
+  const attachment = parsed.attachment;
+  if (!isRec(attachment)) return spawned;
+  if (attachment.type !== "queued_command" || attachment.commandMode !== "task-notification") {
+    return spawned;
+  }
+  const prompt = str(attachment.prompt);
+  if (prompt === null) return spawned;
+  return stopFromNotificationText(prompt, spawned, ts, push);
 }
 
 /** `packages/adapters/claude/src/adapter.ts`'s `EngineAdapter.parseLine` — see design.md § Mapeo Claude. */
@@ -379,6 +435,8 @@ export function mapClaudeLine(
     if (parsed.subtype === "compact_boundary") {
       push({ kind: "compact", ts });
     }
+  } else if (type === "attachment") {
+    spawned = mapAttachment(parsed, ts, spawned, push);
   } else if (!KNOWN_NO_EVENT_TYPES.has(type)) {
     return { ok: false, reason: "unknown-type", detail: type, sessionId, agentId, state };
   }
