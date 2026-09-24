@@ -31,6 +31,12 @@
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/pr-publisher-confirm.sh\"",
             "timeout": 10,
             "statusMessage": "navori: pr-publisher-confirm"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/quality-gate-pre-commit.sh\"",
+            "timeout": 600,
+            "statusMessage": "navori: quality-gate fast"
           }
         ]
       },
@@ -234,7 +240,17 @@
       "Bash(navori plan classify:*)",
       "Bash(navori plan check:*)",
       "Bash(engram save:*)",
-      "mcp__engram__*"
+      "mcp__engram__*",
+      "Bash(bun run lint:*)",
+      "Bash(bun run typecheck:*)",
+      "Bash(bun run lint && bun run typecheck)",
+      "Bash(bun run check:*)",
+      "Bash(bun run build:*)",
+      "Bash(bun run test:*)",
+      "Bash(bun lint:*)",
+      "Bash(bun typecheck:*)",
+      "Bash(bun run format:*)",
+      "Bash(bun format:*)"
     ],
     "ask": [
       "Bash(rm -rf *)",

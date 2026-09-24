@@ -1,0 +1,23 @@
+{
+  "name": "navori-crow",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "bun@1.4.2",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "bun run --filter '*' dev",
+    "build": "bun run --filter '*' build",
+    "lint": "oxlint .",
+    "format": "oxfmt \"apps/**/*.{ts,tsx,svelte}\" \"packages/**/*.ts\"",
+    "format:check": "oxfmt --check \"apps/**/*.{ts,tsx,svelte}\" \"packages/**/*.ts\"",
+    "typecheck": "bun run --filter '*' typecheck",
+    "test": "bun test",
+    "check": "bun run format:check && bun run lint && bun run typecheck && bun run test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "oxfmt": "^0.70.0",
+    "oxlint": "1.75.0",
+    "typescript": "^5.7.0"
+  }
+}

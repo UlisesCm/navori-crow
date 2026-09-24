@@ -4,7 +4,7 @@ Observador **local y en tiempo real** para agentes de código: Claude Code, Code
 
 Levanta un puerto local con una UI web para ver, **solo en lectura**, qué hace cada agente y su harness: prompts, herramientas, subagentes, hooks, tokens y costo, archivos tocados y errores. Junto a eso muestra señales de auditoría. Puedes observar **varios proyectos al mismo tiempo** en una sola pantalla.
 
-> **Estado:** diseño. Todavía no hay código.
+> **Estado:** F0 (bootstrap) — monorepo, tipos base y `/healthz` levantados. Sin ingesta todavía.
 
 ## Por qué
 

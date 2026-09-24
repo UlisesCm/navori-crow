@@ -1,5 +1,6 @@
 node_modules/
 dist/
+apps/server/public/
 *.db
 *.db-shm
 *.db-wal
@@ -9,3 +10,5 @@ dist/
 !.env.example
 .claude/worktrees/
 .claude/settings.local.json
+.claude/progress/
+.claude/.routing-watch/
