@@ -11,6 +11,10 @@ export type {
   PartialCrowEvent,
 } from "./adapter";
 export { bindAdapter } from "./adapter";
+export { EventBus } from "./bus";
+export type { BusListener } from "./bus";
+export { loadConfig } from "./config";
+export type { ConfigEnv } from "./config";
 export type {
   AgentNode,
   ApiErrorResponse,
@@ -45,6 +49,28 @@ export { costUsd, MODEL_PRICES, normalizeModelId, priceFor } from "./pricing";
 export type { ModelPrice } from "./pricing";
 export { projectKey } from "./project-key";
 export type { ProjectKeyResult } from "./project-key";
+export { dbPathFor, openDatabase } from "./store/db";
+export { MIGRATIONS, migrate } from "./store/migrations";
+export type { Migration } from "./store/migrations";
+export {
+  currentCursor,
+  getOffset,
+  getSessionDetail,
+  hasEvent,
+  ingestBatch,
+  listProjects,
+  listSessionEvents,
+  stats,
+  sweepIdle,
+  upsertAgentMeta,
+} from "./store/store";
+export type {
+  IngestBatchDeps,
+  IngestBatchInput,
+  PendingEvent,
+  SessionEventsPage,
+  StoredOffset,
+} from "./store/store";
 export { createUlidFactory, ulidTime } from "./ulid";
 export type { ClockFn } from "./ulid";
 export { weightedTokens } from "./weighted-tokens";
