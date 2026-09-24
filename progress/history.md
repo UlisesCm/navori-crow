@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-24 13:30 — orchestrator — F1: lote B4.T1+T2 (adaptador Claude)
+- Cambios: paquete nuevo `packages/adapters/claude` (`@crow/adapter-claude`: `adapter.ts`, `map-line.ts`, `sidecar.ts`) según § Mapeo Claude; fixture `fixtures/claude/navori-audit/` copiado literal de navori-harness; `store.ts` resuelve `parentAgentId` por `call_id` para `depth > 1` en ambos órdenes de procesamiento (cierra lo que B2 difirió). Cubre R11–R13, R15, R16.
+- Quality gate: ✅ `bun run check` verde (108 pass / 0 fail), Pass 2 del reviewer.
+- Notas: el implementer asumió `toolUseResult.toolUseId` y campos estructurados en la task-notification; contra transcripts reales no existen: el call id sale de `tool_result.tool_use_id` y la notificación es un string con tags `<tool-use-id>`/`<status>`. Corregido antes de revisar. B4.T3 (anonimizador y fixture real `cc-2.1.267`) queda pendiente: el modo auto bloquea derivar un fixture de `~/.claude` desde el agente; el script se escribe aquí y el usuario lo corre sobre la sesión que elija. El reviewer dejó una nota informativa: `toolResultBlocks[0]` asume un solo `tool_result` por línea de fin de agente (0 casos en contra en 1,258 líneas reales).
+- Commit / PR: feat/f1-b4-adapter-claude
+
 ## 2026-09-24 12:40 — orchestrator — F1: lote B3 (tailer genérico)
 - Cambios: `packages/core/src/tailer/` (`line-reader.ts` por bytes con tope de 1,000 líneas u 8 MiB por paso; `ingest.ts` con inode, offset, truncado y `ingest.error`; `tailer.ts` con discovery, backfill por ventana y por sesión, poll, `fs.watch` como pista, rescan y `Scheduler`/`TailerScheduler` con prioridad de archivos calientes, re-encolado de archivos sucios e intervalos inyectables). Adaptador de prueba en `tailer/testing/`. Cubre R5–R10, R16, R22.
 - Quality gate: ✅ `bun run check` verde (101 pass / 0 fail) en macOS y `bun test` verde en Linux (docker `oven/bun:1.4.2`), Pass 2 del reviewer.

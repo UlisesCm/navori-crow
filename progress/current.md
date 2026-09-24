@@ -1,9 +1,9 @@
 # Sesión actual
 
-**Estado:** done (PR de B3 abierto a main)
+**Estado:** done (PR de B4.T1+T2 abierto a main)
 
 ## Resultado
-F1 lote B3 (tailer genérico) completado. Cubre R5–R10, R16, R22.
+F1 lote B4.T1+T2 (adaptador Claude y subagentes) completado. Cubre R11–R13, R15, R16.
 
 ## Siguiente paso
-F1 lote B4 (adaptador Claude) según `specs/f1-mvp-pasivo/tasks.md`, después de mergear el PR de B3. Al arrancar B4: reconciliar la resolución de `parentAgentId` por `call_id` (el design la asigna al store; B2 la difirió) y agregar tests de identidad (e)/(f) con fixtures reales.
+B4.T3: escribir `scripts/anonymize-fixture.ts`, `claude/contract.test.ts` y `fixtures/hygiene.test.ts`; el usuario corre el anonimizador sobre una sesión real (el modo auto no deja al agente leer `~/.claude` para armar el fixture) y se revisa el resultado antes del commit. Después, B5 (registrar `claudeAdapter` en `apps/server/src/adapters.ts`).
