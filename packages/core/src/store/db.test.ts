@@ -34,16 +34,20 @@ describe("openDatabase", () => {
     const crowHome = join(base, ".crow");
     const originalUmask = process.umask(0o022);
 
+    let db: ReturnType<typeof openDatabase> | undefined;
     try {
-      const db = openDatabase(crowHome);
-      db.close();
+      db = openDatabase(crowHome);
 
+      // Assert while the handle is still open: closing the last connection
+      // checkpoints and removes the sidecars on stock SQLite (Linux), while
+      // Apple's system SQLite (used by Bun on macOS) persists them instead.
       const dbPath = dbPathFor(crowHome);
       expect(existsSync(dbPath + "-wal")).toBe(true);
       expect(existsSync(dbPath + "-shm")).toBe(true);
       expect(mode(dbPath + "-wal")).toBe(0o600);
       expect(mode(dbPath + "-shm")).toBe(0o600);
     } finally {
+      db?.close();
       process.umask(originalUmask);
       rmSync(base, { recursive: true, force: true });
     }
