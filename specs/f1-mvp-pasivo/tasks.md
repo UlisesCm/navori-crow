@@ -38,8 +38,8 @@ Cada lote es un PR a `main` con `bun run check` en verde. Cada test lleva `// Co
 
 ## B7 · adaptador Codex (depende de B3; puede ir en paralelo a B4–B6, no toca `apps/server`)
 
-- [ ] **B7.T1** (R14, R16) — `@crow/adapter-codex`: estado por archivo, línea base de tokens (el primer `token_count` cuenta `last_token_usage`; un retroceso produce `usage-anomaly`), historia heredada que se salta con `subagent_history_start_ordinal`, hilos como agentes de la sesión raíz, `semanticKey` y raíz desde `CODEX_HOME`, según `design.md` § Mapeo Codex. · test: `codex/usage.test.ts` casos (a)–(d).
-- [ ] **B7.T2** (R14, R4, R20, R21) — Fixtures anonimizados `fixtures/codex/0.145.0/` (forks fresco y arrastrado) y `fixtures/codex/0.155.1/`, snapshots de contrato sobre el pipeline de B3, y `costUsd` y `weightedTokens` de la sesión que excluyen el acumulado arrastrado. · tests: `codex/contract.test.ts` y `codex/usage.test.ts`.
+- [x] **B7.T1** (R14, R16) — `@crow/adapter-codex`: estado por archivo, línea base de tokens (el primer `token_count` cuenta `last_token_usage`; un retroceso produce `usage-anomaly`), historia heredada que se salta con `subagent_history_start_ordinal`, hilos como agentes de la sesión raíz, `semanticKey` y raíz desde `CODEX_HOME`, según `design.md` § Mapeo Codex. · test: `codex/usage.test.ts` casos (a)–(d).
+- [ ] **B7.T2** (R14, R4, R20, R21) — Fixtures anonimizados `fixtures/codex/0.145.0/` (forks fresco y arrastrado) y `fixtures/codex/0.155.1/`, snapshots de contrato sobre el pipeline de B3, y `costUsd` y `weightedTokens` de la sesión que excluyen el acumulado arrastrado. · tests: `codex/contract.test.ts` y `codex/usage.test.ts`. `codex/contract.test.ts` también debe fijar la ruta JSON exacta de `parent_thread_id` y `depth` dentro de `session_meta.payload.source.subagent.thread_spawn` y revisar si los `guardian` también cargan un id de padre (123 hilos reportan padre contra 111 `thread_spawn`), según el `FIXME(B7.T2)` de `packages/adapters/codex/src/map-line.ts`.
 
 ## B8 · servidor: registro de Codex y e2e multi-motor (depende de B5 y B7)
 
