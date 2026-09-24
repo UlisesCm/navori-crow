@@ -1,0 +1,423 @@
+{
+  "$navori": {
+    "managed": true,
+    "version": "0.10.0",
+    "notes": "Archivo generado por navori. NO editar a mano — los cambios se pierden en el próximo `navori render`. Per-user / per-machine permissions van a settings.local.json (gitignored)."
+  },
+  "attribution": {
+    "commit": "",
+    "pr": "",
+    "sessionUrl": false
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-destructive.sh\"",
+            "timeout": 10,
+            "statusMessage": "navori: guard-destructive"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/comment-draft-confirm.sh\"",
+            "timeout": 10,
+            "statusMessage": "navori: comment-draft-confirm"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/pr-publisher-confirm.sh\"",
+            "timeout": 10,
+            "statusMessage": "navori: pr-publisher-confirm"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Monitor",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/subagent-no-background.sh\"",
+            "timeout": 10,
+            "statusMessage": "navori: subagent-no-background"
+          }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/model-advisor.sh\" claude-pre-tool-use",
+            "timeout": 10,
+            "statusMessage": "navori: model advisor"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/model-advisor.sh\" claude-session-start",
+            "timeout": 10,
+            "statusMessage": "navori: model advisor"
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-start-context.sh\"",
+            "timeout": 15,
+            "statusMessage": "navori: session context"
+          }
+        ]
+      }
+    ],
+    "PostModelSwitch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/model-advisor.sh\" claude-post-model-switch",
+            "timeout": 10,
+            "statusMessage": "navori: model advisor"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/managed-drift-watch.sh\"",
+            "timeout": 10,
+            "statusMessage": "navori: managed-block drift"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Edit|Write|NotebookEdit|Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/routing-watch.sh\"",
+            "timeout": 10,
+            "statusMessage": "navori: routing check"
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/subagent-stop-handoff.sh\"",
+            "timeout": 15,
+            "statusMessage": "navori: handoff check"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/audit-mode-trigger.sh\"",
+            "timeout": 10,
+            "statusMessage": "navori: audit-mode"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/audit-mode-close.sh\"",
+            "timeout": 10,
+            "statusMessage": "navori: audit-mode close"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/worktree-reclaim.sh\"",
+            "timeout": 30,
+            "statusMessage": "navori: reclaim worktrees"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git branch*)",
+      "Bash(git fetch*)",
+      "Bash(git stash*)",
+      "Bash(git blame*)",
+      "Bash(git describe*)",
+      "Bash(git rev-parse*)",
+      "Bash(git ls-files*)",
+      "Bash(git cat-file*)",
+      "Bash(git hash-object:*)",
+      "Bash(git shortlog*)",
+      "Bash(git tag -l*)",
+      "Bash(git tag --list*)",
+      "Bash(git config --get*)",
+      "Bash(git config --list*)",
+      "Bash(git remote -v*)",
+      "Bash(git remote get-url*)",
+      "Bash(git merge-base*)",
+      "Bash(git rev-list*)",
+      "Bash(git -c core.quotepath=false diff*)",
+      "Bash(git -c core.quotepath=false ls-files*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git restore --staged:*)",
+      "Bash(git switch:*)",
+      "Bash(git pull --ff-only*)",
+      "Bash(git checkout -b:*)",
+      "Bash(git push -u origin HEAD)",
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(ls:*)",
+      "Bash(mkdir -p:*)",
+      "Bash(pwd:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(which:*)",
+      "Bash(file:*)",
+      "Bash(stat:*)",
+      "Bash(tree:*)",
+      "Bash(grep:*)",
+      "Bash(ast-grep:*)",
+      "Bash(jq:*)",
+      "Bash(diff:*)",
+      "Bash(cut:*)",
+      "Bash(du:*)",
+      "Bash(df:*)",
+      "Bash(realpath:*)",
+      "Bash(dirname:*)",
+      "Bash(basename:*)",
+      "Bash(tr:*)",
+      "Bash(comm:*)",
+      "Bash(column:*)",
+      "Bash(echo:*)",
+      "Bash(printf:*)",
+      "Bash(command -v:*)",
+      "Bash(shasum:*)",
+      "Bash(md5:*)",
+      "Bash(bash -n:*)",
+      "Bash(navori doctor:*)",
+      "Bash(navori status:*)",
+      "Bash(navori audit:*)",
+      "Bash(navori receipt:*)",
+      "Bash(navori dominio list:*)",
+      "Bash(navori dominio show:*)",
+      "Bash(navori dominio doctor:*)",
+      "Bash(navori plan classify:*)",
+      "Bash(navori plan check:*)",
+      "Bash(engram save:*)",
+      "mcp__engram__*"
+    ],
+    "ask": [
+      "Bash(rm -rf *)",
+      "Bash(rm -fr *)",
+      "Bash(rm -Rf *)",
+      "Bash(rm -fR *)",
+      "Bash(rm -r *)",
+      "Bash(rm -R *)",
+      "Bash(rm --recursive *)",
+      "Bash(rm -r -f *)",
+      "Bash(rm -r --force *)",
+      "Bash(rm -R -f *)",
+      "Bash(rm -R --force *)",
+      "Bash(rm --recursive -f *)",
+      "Bash(rm --recursive --force *)",
+      "Bash(rm -f -r *)",
+      "Bash(rm -f -R *)",
+      "Bash(rm -f --recursive *)",
+      "Bash(rm --force -r *)",
+      "Bash(rm --force -R *)",
+      "Bash(rm --force --recursive *)",
+      "Bash(git push --force*)",
+      "Bash(git push -f *)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean -f*)",
+      "Bash(git clean -d*)",
+      "Bash(git checkout -- .)",
+      "Bash(git checkout .)",
+      "Bash(git branch -D *)",
+      "Bash(git branch --delete*)",
+      "Bash(git stash drop*)",
+      "Bash(git stash clear*)",
+      "Bash(chmod -R *)",
+      "Bash(engram import *)"
+    ],
+    "deny": [
+      "Agent(orchestrator)",
+      "Bash(engram delete *)",
+      "Bash(rm -rf /)",
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~)",
+      "Bash(rm -rf ~/*)",
+      "Bash(rm -rf $HOME)",
+      "Bash(rm -rf $HOME/*)",
+      "Bash(rm -fr /)",
+      "Bash(rm -fr /*)",
+      "Bash(rm -fr ~)",
+      "Bash(rm -fr ~/*)",
+      "Bash(rm -fr $HOME)",
+      "Bash(rm -fr $HOME/*)",
+      "Bash(rm -Rf /)",
+      "Bash(rm -Rf /*)",
+      "Bash(rm -Rf ~)",
+      "Bash(rm -Rf ~/*)",
+      "Bash(rm -Rf $HOME)",
+      "Bash(rm -Rf $HOME/*)",
+      "Bash(rm -fR /)",
+      "Bash(rm -fR /*)",
+      "Bash(rm -fR ~)",
+      "Bash(rm -fR ~/*)",
+      "Bash(rm -fR $HOME)",
+      "Bash(rm -fR $HOME/*)",
+      "Bash(rm -r /)",
+      "Bash(rm -r /*)",
+      "Bash(rm -r ~)",
+      "Bash(rm -r ~/*)",
+      "Bash(rm -r $HOME)",
+      "Bash(rm -r $HOME/*)",
+      "Bash(rm -R /)",
+      "Bash(rm -R /*)",
+      "Bash(rm -R ~)",
+      "Bash(rm -R ~/*)",
+      "Bash(rm -R $HOME)",
+      "Bash(rm -R $HOME/*)",
+      "Bash(rm --recursive /)",
+      "Bash(rm --recursive /*)",
+      "Bash(rm --recursive ~)",
+      "Bash(rm --recursive ~/*)",
+      "Bash(rm --recursive $HOME)",
+      "Bash(rm --recursive $HOME/*)",
+      "Bash(rm -r -f /)",
+      "Bash(rm -r -f /*)",
+      "Bash(rm -r -f ~)",
+      "Bash(rm -r -f ~/*)",
+      "Bash(rm -r -f $HOME)",
+      "Bash(rm -r -f $HOME/*)",
+      "Bash(rm -r --force /)",
+      "Bash(rm -r --force /*)",
+      "Bash(rm -r --force ~)",
+      "Bash(rm -r --force ~/*)",
+      "Bash(rm -r --force $HOME)",
+      "Bash(rm -r --force $HOME/*)",
+      "Bash(rm -R -f /)",
+      "Bash(rm -R -f /*)",
+      "Bash(rm -R -f ~)",
+      "Bash(rm -R -f ~/*)",
+      "Bash(rm -R -f $HOME)",
+      "Bash(rm -R -f $HOME/*)",
+      "Bash(rm -R --force /)",
+      "Bash(rm -R --force /*)",
+      "Bash(rm -R --force ~)",
+      "Bash(rm -R --force ~/*)",
+      "Bash(rm -R --force $HOME)",
+      "Bash(rm -R --force $HOME/*)",
+      "Bash(rm --recursive -f /)",
+      "Bash(rm --recursive -f /*)",
+      "Bash(rm --recursive -f ~)",
+      "Bash(rm --recursive -f ~/*)",
+      "Bash(rm --recursive -f $HOME)",
+      "Bash(rm --recursive -f $HOME/*)",
+      "Bash(rm --recursive --force /)",
+      "Bash(rm --recursive --force /*)",
+      "Bash(rm --recursive --force ~)",
+      "Bash(rm --recursive --force ~/*)",
+      "Bash(rm --recursive --force $HOME)",
+      "Bash(rm --recursive --force $HOME/*)",
+      "Bash(rm -f -r /)",
+      "Bash(rm -f -r /*)",
+      "Bash(rm -f -r ~)",
+      "Bash(rm -f -r ~/*)",
+      "Bash(rm -f -r $HOME)",
+      "Bash(rm -f -r $HOME/*)",
+      "Bash(rm -f -R /)",
+      "Bash(rm -f -R /*)",
+      "Bash(rm -f -R ~)",
+      "Bash(rm -f -R ~/*)",
+      "Bash(rm -f -R $HOME)",
+      "Bash(rm -f -R $HOME/*)",
+      "Bash(rm -f --recursive /)",
+      "Bash(rm -f --recursive /*)",
+      "Bash(rm -f --recursive ~)",
+      "Bash(rm -f --recursive ~/*)",
+      "Bash(rm -f --recursive $HOME)",
+      "Bash(rm -f --recursive $HOME/*)",
+      "Bash(rm --force -r /)",
+      "Bash(rm --force -r /*)",
+      "Bash(rm --force -r ~)",
+      "Bash(rm --force -r ~/*)",
+      "Bash(rm --force -r $HOME)",
+      "Bash(rm --force -r $HOME/*)",
+      "Bash(rm --force -R /)",
+      "Bash(rm --force -R /*)",
+      "Bash(rm --force -R ~)",
+      "Bash(rm --force -R ~/*)",
+      "Bash(rm --force -R $HOME)",
+      "Bash(rm --force -R $HOME/*)",
+      "Bash(rm --force --recursive /)",
+      "Bash(rm --force --recursive /*)",
+      "Bash(rm --force --recursive ~)",
+      "Bash(rm --force --recursive ~/*)",
+      "Bash(rm --force --recursive $HOME)",
+      "Bash(rm --force --recursive $HOME/*)",
+      "Bash(rm --no-preserve-root*)",
+      "Bash(rm -rf --no-preserve-root*)",
+      "Bash(rm -fr --no-preserve-root*)",
+      "Bash(rm -Rf --no-preserve-root*)",
+      "Bash(rm -fR --no-preserve-root*)",
+      "Bash(rm -r --no-preserve-root*)",
+      "Bash(rm -R --no-preserve-root*)",
+      "Bash(rm --recursive --no-preserve-root*)",
+      "Bash(rm -r -f --no-preserve-root*)",
+      "Bash(rm -r --force --no-preserve-root*)",
+      "Bash(rm -R -f --no-preserve-root*)",
+      "Bash(rm -R --force --no-preserve-root*)",
+      "Bash(rm --recursive -f --no-preserve-root*)",
+      "Bash(rm --recursive --force --no-preserve-root*)",
+      "Bash(rm -f -r --no-preserve-root*)",
+      "Bash(rm -f -R --no-preserve-root*)",
+      "Bash(rm -f --recursive --no-preserve-root*)",
+      "Bash(rm --force -r --no-preserve-root*)",
+      "Bash(rm --force -R --no-preserve-root*)",
+      "Bash(rm --force --recursive --no-preserve-root*)",
+      "Bash(sudo rm *)",
+      "Bash(mkfs*)"
+    ]
+  },
+  "effortLevel": "xhigh",
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_LOGS_EXPORTER": "otlp",
+    "OTEL_METRICS_EXPORTER": "none",
+    "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": "http/json",
+    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "http://127.0.0.1:4318/v1/logs",
+    "OTEL_LOGS_EXPORT_INTERVAL": "1000"
+  }
+}
