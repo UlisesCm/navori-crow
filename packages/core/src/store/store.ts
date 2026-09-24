@@ -232,6 +232,42 @@ function ensureAgent(
   return id;
 }
 
+/**
+ * Resolves the `agents.id` of whichever agent recorded a `tool.pre` with
+ * `call_id = spawnCallId` in this session, or `null` if that call hasn't
+ * been ingested yet (design.md ingestBatch step 5: "la resolución del padre
+ * para depth > 1"). The Claude adapter never knows this natively — it only
+ * knows the call id that spawned it — so depth > 1 parenthood is resolved
+ * here, by content, not by the adapter.
+ */
+function resolveDepthParent(db: Database, sessionId: string, spawnCallId: string): string | null {
+  const row = db
+    .query<{ agent_id: string | null }, [string, string]>(
+      "SELECT agent_id FROM events WHERE session_id = ? AND kind = 'tool.pre' AND call_id = ? LIMIT 1",
+    )
+    .get(sessionId, spawnCallId);
+  return row === null ? null : agentRowId(sessionId, row.agent_id);
+}
+
+/**
+ * Resolves any agent still pending its depth > 1 parent (B2's pending
+ * decision, reconciled here) once a `tool.pre` with a matching `call_id` is
+ * ingested — covers the "child before parent" processing order, symmetric
+ * with {@link resolveDepthParent}'s "parent before child" lookup at
+ * `agent.start` time. Both orders converge on the same final tree.
+ */
+function resolvePendingChildren(
+  db: Database,
+  sessionId: string,
+  parentRowKey: string,
+  callId: string,
+): void {
+  db.query(
+    `UPDATE agents SET parent_id = ?
+     WHERE session_id = ? AND depth > 1 AND parent_id IS NULL AND spawn_call_id = ?`,
+  ).run(parentRowKey, sessionId, callId);
+}
+
 function insertDedupe(
   db: Database,
   source: EventSource,
@@ -516,9 +552,22 @@ export function ingestBatch(
           event.agent.depth ?? null,
           agentRowKey,
         );
+        // depth > 1: the adapter never knows its native parent, only the call id that spawned
+        // it — resolve it now if that tool.pre already landed (D3/ingestBatch step 5).
+        if ((event.agent.depth ?? 0) > 1 && event.agent.spawnCallId !== undefined) {
+          const parentRowKey = resolveDepthParent(db, sessionId, event.agent.spawnCallId);
+          if (parentRowKey !== null) {
+            db.query("UPDATE agents SET parent_id = ? WHERE id = ?").run(parentRowKey, agentRowKey);
+          }
+        }
       }
       if (event.kind === "agent.stop") {
         db.query("UPDATE agents SET ended_at = ? WHERE id = ?").run(event.ts, agentRowKey);
+      }
+      if (event.kind === "tool.pre" && event.tool?.callId !== undefined) {
+        // Symmetric case: some depth > 1 agent may already be waiting on this exact call id
+        // (child ingested before its parent's tool.pre — the other processing order).
+        resolvePendingChildren(db, sessionId, agentRowKey, event.tool.callId);
       }
 
       let usageForStorage: CrowEventUsage | undefined = event.usage;
