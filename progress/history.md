@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-24 11:10 — orchestrator — F1: lote B2 (store SQLite)
+- Cambios: `packages/core/src/config.ts`, `bus.ts` y `store/` (`db.ts` con WAL y permisos 0700/0600 incluidos `-wal`/`-shm`; `migrations.ts` con `PRAGMA user_version` transaccional y esquema v1; `store.ts` con `ingestBatch`, `upsertAgentMeta`, `sweepIdle`, `hasEvent`, `stats` y lecturas para la API). Cubre R1–R4, R13, R15–R19, R22.
+- Quality gate: ✅ `bun run check` verde (64 pass / 0 fail), Pass 2 del reviewer.
+- Notas: el store confía en `parentAgentId` tal como llega; la resolución por `call_id` (design, paso 5 de `ingestBatch`) queda para B4 y hay que reconciliarla ahí. `upsertAgentMeta` recibe `engine` aparte de `AgentMetaPatch`. Las lecturas de R25–R27 se prueban en B5. Deuda menor: `// Covers: R4` mal etiquetado en el test de `hasEvent`, JSDoc desactualizado en `IngestBatchDeps.now`, y `mkdirSync` recursivo no asegura directorios intermedios si `CROW_HOME` se anida más de un nivel nuevo.
+- Commit / PR: feat/f1-b2-store
+
 ## 2026-09-24 16:20 — orchestrator — F1: spec SDD y lote B1 (core puro)
 - Cambios: spec `specs/f1-mvp-pasivo/` (requirements R1–R33, design con challenge del auditor, tasks en lotes B1–B8). B1 en `packages/core`: contrato de adaptador de F1, tipos REST y subpath `@crow/core/types`, narrowing, ULID monotónico, `weightedTokens` portado literal de navori-harness (`21f6c054`), tabla de precios de Claude con fuente oficial fechada, `projectKey` que nunca lanza. Workspaces incluye `packages/adapters/*`.
 - Quality gate: ✅ `bun run check` verde (36 pass / 0 fail), Pass 2 del reviewer.
