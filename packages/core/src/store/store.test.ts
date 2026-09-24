@@ -144,9 +144,9 @@ describe("ingestBatch: totals", () => {
   });
 });
 
-describe("ingestBatch: usage anomaly (R13)", () => {
-  test("a repeated message.id with a different usage keeps the first and flags an anomaly", () => {
-    // Covers: R13
+describe("ingestBatch: usage max-tracking and anomaly (R13, round 4)", () => {
+  test("a repeated message.id whose usage grew counts only the positive delta, once", () => {
+    // Covers: R13 — real Claude streaming: output_tokens grows across duplicate message.id lines.
     const db = freshDb();
     const deps = makeDeps();
 
@@ -161,13 +161,13 @@ describe("ingestBatch: usage anomaly (R13)", () => {
           {
             kind: "assistant.message",
             usage: {
-              input: 10,
-              output: 5,
-              cacheRead: 0,
-              cacheCreation: 0,
+              input: 2,
+              output: 1,
+              cacheRead: 100,
+              cacheCreation: 50,
               model: "claude-sonnet-5",
             },
-            usageKey: "u:main:dup",
+            usageKey: "u:main:grow",
           },
         ),
         makePending(
@@ -175,34 +175,43 @@ describe("ingestBatch: usage anomaly (R13)", () => {
           {
             kind: "assistant.message",
             usage: {
-              input: 999,
-              output: 999,
-              cacheRead: 0,
-              cacheCreation: 0,
+              input: 2,
+              output: 388, // grew; every other component held
+              cacheRead: 100,
+              cacheCreation: 50,
               model: "claude-sonnet-5",
             },
-            usageKey: "u:main:dup",
+            usageKey: "u:main:grow",
           },
         ),
       ],
     });
 
-    expect(
-      stored.filter((e) => e.kind === "assistant.message" && e.usage !== undefined),
-    ).toHaveLength(1);
-    expect(
-      stored.some((e) => e.kind === "ingest.error" && e.error?.reason === "usage-anomaly"),
-    ).toBe(true);
+    const withUsage = stored.filter((e) => e.kind === "assistant.message" && e.usage !== undefined);
+    expect(withUsage).toHaveLength(2); // both lines counted: first is the baseline, second is the delta
+    expect(withUsage[0]?.usage).toMatchObject({
+      input: 2,
+      output: 1,
+      cacheRead: 100,
+      cacheCreation: 50,
+    });
+    expect(withUsage[1]?.usage).toMatchObject({
+      input: 0,
+      output: 387,
+      cacheRead: 0,
+      cacheCreation: 0,
+    }); // delta only
+    expect(stored.some((e) => e.kind === "ingest.error")).toBe(false);
 
     const detail = getSessionDetail(db, "claude:s1");
-    expect(detail?.session.totals.input).toBe(10); // only the first usage counted
+    expect(detail?.session.totals.input).toBe(2);
+    expect(detail?.session.totals.output).toBe(388); // 1 + 387, the true final value — not 1+388
+    expect(detail?.session.totals.cacheRead).toBe(100);
 
-    const ingestStats = stats(db);
-    expect(ingestStats.usageAnomalies).toBe(1);
-    expect(ingestStats.errorsByReason["usage-anomaly"]).toBe(1);
+    expect(stats(db).usageAnomalies).toBe(0);
   });
 
-  test("an identical repeated usage is dropped silently, without an anomaly", () => {
+  test("an identical repeated usage is a zero-delta no-op: counted once, no anomaly, no phantom event", () => {
     // Covers: R13
     const db = freshDb();
     const deps = makeDeps();
@@ -222,20 +231,198 @@ describe("ingestBatch: usage anomaly (R13)", () => {
       events: [
         makePending(
           { lineHash: "h1" },
-          { kind: "assistant.message", usage: { ...sameUsage }, usageKey: "u:main:same" },
+          {
+            kind: "assistant.message",
+            usage: { ...sameUsage },
+            usageKey: "u:main:same",
+            text: "hi",
+          },
         ),
+        // A usage-only continuation (no text): the round-4 shape `mapAssistant` now emits for a
+        // duplicate `message.id` whose usage didn't move at all.
         makePending(
           { lineHash: "h2" },
-          { kind: "assistant.message", usage: { ...sameUsage }, usageKey: "u:main:same" },
+          {
+            kind: "assistant.message",
+            usage: { ...sameUsage },
+            usageKey: "u:main:same",
+            text: undefined,
+          },
         ),
       ],
     });
 
     expect(stored.every((e) => e.kind !== "ingest.error")).toBe(true);
     expect(stats(db).usageAnomalies).toBe(0);
+    // The zero-delta, text-free second line isn't persisted at all (round 4: no phantom events).
+    expect(stored).toHaveLength(1);
 
     const detail = getSessionDetail(db, "claude:s1");
     expect(detail?.session.totals.input).toBe(10);
+  });
+
+  test("any component decreasing is an anomaly: the tracked max is kept, nothing from that line counts", () => {
+    // Covers: R13
+    const db = freshDb();
+    const deps = makeDeps();
+
+    const stored = ingestBatch(db, deps, {
+      path: "/f",
+      inode: "1",
+      nextOffset: 10,
+      state: null,
+      events: [
+        makePending(
+          { lineHash: "h1" },
+          {
+            kind: "assistant.message",
+            usage: {
+              input: 10,
+              output: 999,
+              cacheRead: 0,
+              cacheCreation: 0,
+              model: "claude-sonnet-5",
+            },
+            usageKey: "u:main:dup",
+          },
+        ),
+        makePending(
+          { lineHash: "h2" },
+          {
+            // input grew, but output DROPPED below the tracked max: the whole line is an anomaly,
+            // even the grown component doesn't count (design.md D7, round 4).
+            kind: "assistant.message",
+            usage: {
+              input: 20,
+              output: 5,
+              cacheRead: 0,
+              cacheCreation: 0,
+              model: "claude-sonnet-5",
+            },
+            usageKey: "u:main:dup",
+            text: "still has text, but usage is dropped",
+          },
+        ),
+      ],
+    });
+
+    expect(
+      stored.filter((e) => e.kind === "assistant.message" && e.usage !== undefined),
+    ).toHaveLength(1);
+    // The text-bearing second line is still persisted (it carries `text`), just without usage.
+    expect(stored.find((e) => e.kind === "assistant.message" && e.usage === undefined)?.text).toBe(
+      "still has text, but usage is dropped",
+    );
+    expect(
+      stored.some((e) => e.kind === "ingest.error" && e.error?.reason === "usage-anomaly"),
+    ).toBe(true);
+
+    const detail = getSessionDetail(db, "claude:s1");
+    expect(detail?.session.totals.input).toBe(10); // kept the max, not the grown-but-tainted 20
+    expect(detail?.session.totals.output).toBe(999);
+
+    const ingestStats = stats(db);
+    expect(ingestStats.usageAnomalies).toBe(1);
+    expect(ingestStats.errorsByReason["usage-anomaly"]).toBe(1);
+  });
+
+  test("re-ingesting the exact same lines (offset-0 restart) doesn't double-count the tracked max", () => {
+    // Covers: R13, R6, R16 — content dedupe (lineKey) short-circuits before usage tracking runs at
+    // all, so a full re-ingest from a persisted offset of 0 is idempotent for usage too.
+    const db = freshDb();
+    const events = [
+      makePending(
+        { lineHash: "h1" },
+        {
+          kind: "assistant.message",
+          usage: { input: 2, output: 1, cacheRead: 0, cacheCreation: 0, model: "claude-sonnet-5" },
+          usageKey: "u:main:restart",
+        },
+      ),
+      makePending(
+        { lineHash: "h2" },
+        {
+          kind: "assistant.message",
+          usage: {
+            input: 2,
+            output: 500,
+            cacheRead: 0,
+            cacheCreation: 0,
+            model: "claude-sonnet-5",
+          },
+          usageKey: "u:main:restart",
+        },
+      ),
+    ];
+    const input = { path: "/f", inode: "1", nextOffset: 10, state: null, events };
+
+    ingestBatch(db, makeDeps(), input);
+    const before = getSessionDetail(db, "claude:s1")?.session.totals.output;
+
+    // Same file re-tailed from a persisted offset of 0 (e.g. after a restart) with a fresh ULID
+    // factory — same lineHash+part, so every event is a content-identity duplicate (R16).
+    ingestBatch(db, makeDeps(), { ...input, events });
+
+    const after = getSessionDetail(db, "claude:s1")?.session.totals.output;
+    expect(before).toBe(500);
+    expect(after).toBe(500); // unchanged: no double counting
+    expect(stats(db).usageAnomalies).toBe(0);
+  });
+
+  test("usage growing across two separate ingestBatch calls (a later poll) still counts only the delta", () => {
+    // Covers: R13 — the tracked max is a DB row, not in-memory state, so it survives across batches.
+    const db = freshDb();
+
+    ingestBatch(db, makeDeps(), {
+      path: "/f",
+      inode: "1",
+      nextOffset: 10,
+      state: null,
+      events: [
+        makePending(
+          { lineHash: "h1" },
+          {
+            kind: "assistant.message",
+            usage: {
+              input: 2,
+              output: 1,
+              cacheRead: 0,
+              cacheCreation: 0,
+              model: "claude-sonnet-5",
+            },
+            usageKey: "u:main:cross-batch",
+          },
+        ),
+      ],
+    });
+
+    ingestBatch(db, makeDeps(), {
+      path: "/f",
+      inode: "1",
+      nextOffset: 20,
+      state: null,
+      events: [
+        makePending(
+          { lineHash: "h2" }, // a new line, appended later, same message.id/usageKey
+          {
+            kind: "assistant.message",
+            usage: {
+              input: 2,
+              output: 388,
+              cacheRead: 0,
+              cacheCreation: 0,
+              model: "claude-sonnet-5",
+            },
+            usageKey: "u:main:cross-batch",
+          },
+        ),
+      ],
+    });
+
+    const detail = getSessionDetail(db, "claude:s1");
+    expect(detail?.session.totals.input).toBe(2); // not 2+2
+    expect(detail?.session.totals.output).toBe(388); // not 1+388
+    expect(stats(db).usageAnomalies).toBe(0);
   });
 });
 

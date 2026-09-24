@@ -213,6 +213,176 @@ describe("agent.start / agent.stop: asynchronous completion via task-notificatio
   });
 });
 
+describe("agent.start / agent.stop: asynchronous completion via the cc-2.1.281 attachment shape (R12)", () => {
+  test("async_launched then an attachment/queued_command/task-notification line stops the right subagent", async () => {
+    // Covers: R12
+    await withTempDir(async (root) => {
+      const sid = "sess-async281";
+      mkdirSync(join(root, "proj"), { recursive: true });
+      const mainPath = join(root, "proj", `${sid}.jsonl`);
+      writeFileSync(
+        mainPath,
+        line({
+          type: "assistant",
+          timestamp: "2026-09-24T10:00:01.000Z",
+          sessionId: sid,
+          uuid: "u1",
+          message: {
+            id: "m1",
+            model: "claude-x",
+            content: [
+              { type: "tool_use", id: "c9", name: "Agent", input: { subagent_type: "reviewer" } },
+            ],
+          },
+        }) +
+          line({
+            type: "user",
+            timestamp: "2026-09-24T10:00:02.000Z",
+            sessionId: sid,
+            uuid: "u2",
+            message: { content: [{ type: "tool_result", tool_use_id: "c9", content: "launched" }] },
+            toolUseResult: {
+              agentId: "agentB",
+              status: "async_launched",
+              description: "review Y",
+              isAsync: true,
+              canReadOutputFile: true,
+              outputFile: "/tmp/agentB.out",
+              prompt: "review Y",
+              resolvedModel: "claude-x",
+            },
+          }) +
+          // The 8 real-world `queue-operation` echoes of the same notification (enqueue/dequeue):
+          // must stay a no-op, never a stop on their own.
+          line({
+            type: "queue-operation",
+            timestamp: "2026-09-24T10:00:09.000Z",
+            sessionId: sid,
+            operation: "enqueue",
+            content:
+              "<task-notification><tool-use-id>c9</tool-use-id>" +
+              "<status>completed</status></task-notification>",
+          }) +
+          // cc-2.1.281's real shape: `type: "attachment"`, `attachment.type: "queued_command"`,
+          // `attachment.commandMode: "task-notification"`, payload in `attachment.prompt`.
+          line({
+            type: "attachment",
+            timestamp: "2026-09-24T10:00:10.000Z",
+            sessionId: sid,
+            uuid: "u3",
+            attachment: {
+              type: "queued_command",
+              commandMode: "task-notification",
+              prompt:
+                "<task-notification><tool-use-id>c9</tool-use-id>" +
+                "<status>completed</status><summary>done</summary></task-notification>",
+              source_uuid: "irrelevant",
+            },
+            rendered: [{ content: "irrelevant, duplicate rendering" }],
+          }),
+      );
+
+      const db = freshDb();
+      const bus = new EventBus();
+      const result = await ingest(db, bus, root, mainPath);
+
+      const stops = result.events.filter((e) => e.kind === "agent.stop");
+      expect(stops).toHaveLength(1); // queue-operation must not double-stop
+      expect(stops[0]?.agentId).toBe("agentB");
+      expect(stops[0]?.agent?.outcome).toBe("completed");
+    });
+  });
+
+  test("two attachment/task-notification lines for the same call id stop the subagent exactly once", async () => {
+    // Covers: R12
+    await withTempDir(async (root) => {
+      const sid = "sess-async281-dup";
+      mkdirSync(join(root, "proj"), { recursive: true });
+      const mainPath = join(root, "proj", `${sid}.jsonl`);
+      const notificationLine = line({
+        type: "attachment",
+        timestamp: "2026-09-24T10:00:10.000Z",
+        sessionId: sid,
+        uuid: "u3",
+        attachment: {
+          type: "queued_command",
+          commandMode: "task-notification",
+          prompt:
+            "<task-notification><tool-use-id>c9</tool-use-id>" +
+            "<status>completed</status></task-notification>",
+        },
+      });
+      writeFileSync(
+        mainPath,
+        line({
+          type: "assistant",
+          timestamp: "2026-09-24T10:00:01.000Z",
+          sessionId: sid,
+          uuid: "u1",
+          message: {
+            id: "m1",
+            model: "claude-x",
+            content: [
+              { type: "tool_use", id: "c9", name: "Agent", input: { subagent_type: "reviewer" } },
+            ],
+          },
+        }) +
+          line({
+            type: "user",
+            timestamp: "2026-09-24T10:00:02.000Z",
+            sessionId: sid,
+            uuid: "u2",
+            message: { content: [{ type: "tool_result", tool_use_id: "c9", content: "launched" }] },
+            toolUseResult: {
+              agentId: "agentB",
+              status: "async_launched",
+              description: "review Y",
+              isAsync: true,
+              canReadOutputFile: true,
+              outputFile: "/tmp/agentB.out",
+              prompt: "review Y",
+              resolvedModel: "claude-x",
+            },
+          }) +
+          notificationLine +
+          notificationLine,
+      );
+
+      const db = freshDb();
+      const bus = new EventBus();
+      const result = await ingest(db, bus, root, mainPath);
+
+      expect(result.events.filter((e) => e.kind === "agent.stop")).toHaveLength(1);
+    });
+  });
+
+  test("an attachment line with an unrelated subtype yields no event and no error", async () => {
+    // Covers: R12
+    await withTempDir(async (root) => {
+      const sid = "sess-attach-other";
+      mkdirSync(join(root, "proj"), { recursive: true });
+      const mainPath = join(root, "proj", `${sid}.jsonl`);
+      writeFileSync(
+        mainPath,
+        line({
+          type: "attachment",
+          timestamp: "2026-09-24T10:00:00.000Z",
+          sessionId: sid,
+          uuid: "u0",
+          attachment: { type: "total_tokens_reminder", text: "irrelevant" },
+        }),
+      );
+
+      const db = freshDb();
+      const bus = new EventBus();
+      const result = await ingest(db, bus, root, mainPath);
+
+      expect(result.events).toHaveLength(1); // only the implicit session.start
+      expect(result.events[0]?.kind).toBe("session.start");
+    });
+  });
+});
+
 describe("late sidecar (R12)", () => {
   test("a sidecar that appears after the .jsonl is applied via upsertAgentMeta, with no event", async () => {
     // Covers: R12

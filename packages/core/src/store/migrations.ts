@@ -109,8 +109,27 @@ CREATE TABLE ingest_stats (
 ) WITHOUT ROWID;
 `;
 
-/** Ordered set of migrations this build knows how to apply (F1 ships only version 1). */
-export const MIGRATIONS: readonly Migration[] = [{ version: 1, sql: SCHEMA_V1 }];
+/**
+ * Schema v2 (round 4, `.claude/progress/impl_f1-b4t3-contract.md`, D7/R13): `dedupe` gains 5 nullable
+ * numeric columns to track the component-wise MAX usage seen per `usageKey`, replacing the old
+ * single-fingerprint compare — needed so a later duplicate `message.id` line whose usage grew (real
+ * Claude streaming) can count its positive delta instead of being dropped whole. `fp` is left in
+ * place (still used by `lineKey`/`semanticKey` rows, always `NULL` for `usageKey` rows now) —
+ * additive only, no existing column touched, so an existing DB upgrades without data loss.
+ */
+const SCHEMA_V2 = `
+ALTER TABLE dedupe ADD COLUMN u_input INTEGER;
+ALTER TABLE dedupe ADD COLUMN u_output INTEGER;
+ALTER TABLE dedupe ADD COLUMN u_cache_read INTEGER;
+ALTER TABLE dedupe ADD COLUMN u_cache_creation INTEGER;
+ALTER TABLE dedupe ADD COLUMN u_cache_creation_1h INTEGER;
+`;
+
+/** Ordered set of migrations this build knows how to apply. */
+export const MIGRATIONS: readonly Migration[] = [
+  { version: 1, sql: SCHEMA_V1 },
+  { version: 2, sql: SCHEMA_V2 },
+];
 
 /** Reads `PRAGMA user_version` (outside any transaction, per D2). */
 function userVersion(db: Database): number {

@@ -23,7 +23,7 @@ Cada lote es un PR a `main` con `bun run check` en verde. Cada test lleva `// Co
 
 - [ ] **B4.T1** (R11, R13, R15, R16) — `@crow/adapter-claude`: mapeo del transcript principal según `design.md` § Mapeo Claude, `semanticKey` y paridad con el fixture de navori copiado en `fixtures/claude/navori-audit/`. · test: `navori-parity.test.ts`, con los totales exactos de `design.md` § Testing strategy.
 - [ ] **B4.T2** (R12) — Subagentes: `subagents/agent-*.jsonl` más el sidecar `.meta.json` (incluido el sidecar tardío), `agent.start`/`agent.stop` y árbol con `depth = 2`. · test: `claude/subagents.test.ts`.
-- [ ] **B4.T3** (R11, R12) — `scripts/anonymize-fixture.ts` (allowlist de claves estructurales, `cwd` reescritos y usage intacto), fixture real `fixtures/claude/cc-2.1.267/` y snapshot de contrato. · tests: `claude/contract.test.ts` y `fixtures/hygiene.test.ts`.
+- [x] **B4.T3** (R11, R12) — `scripts/anonymize-fixture.ts` (allowlist de claves estructurales, `cwd` reescritos y usage intacto), fixture real `fixtures/claude/cc-2.1.281/` y snapshot de contrato. · tests: `claude/contract.test.ts` y `fixtures/hygiene.test.ts`.
 
 ## B5 · servidor: API y tiempo real (depende de B4)
 

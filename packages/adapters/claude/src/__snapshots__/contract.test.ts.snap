@@ -1,0 +1,111 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`claude contract: real cc-2.1.281 fixture through the real pipeline stable summary snapshot + explicit per-row assertions (R11, R12) 1`] = `
+{
+  "agentTree": [
+    {
+      "agentId": null,
+      "hasStart": true,
+      "hasStop": false,
+      "parentAgentId": null,
+      "type": null,
+    },
+    {
+      "agentId": "id114",
+      "hasStart": true,
+      "hasStop": true,
+      "parentAgentId": null,
+      "type": "architect",
+    },
+    {
+      "agentId": "id132",
+      "hasStart": true,
+      "hasStop": true,
+      "parentAgentId": null,
+      "type": "auditor",
+    },
+    {
+      "agentId": "id208",
+      "hasStart": true,
+      "hasStop": true,
+      "parentAgentId": null,
+      "type": "implementer",
+    },
+    {
+      "agentId": "id232",
+      "hasStart": true,
+      "hasStop": true,
+      "parentAgentId": null,
+      "type": "reviewer",
+    },
+    {
+      "agentId": "id299",
+      "hasStart": true,
+      "hasStop": true,
+      "parentAgentId": null,
+      "type": "publisher",
+    },
+  ],
+  "eventCountsByKind": {
+    "agent.start": 5,
+    "agent.stop": 5,
+    "assistant.message": 286,
+    "prompt": 16,
+    "session.start": 1,
+    "tool.error": 4,
+    "tool.post": 258,
+    "tool.pre": 262,
+  },
+  "ingestErrorCountsByReason": {},
+  "perAgentTokenTotals": [
+    {
+      "agentId": null,
+      "cacheCreation": 125022,
+      "cacheRead": 4543110,
+      "input": 94,
+      "output": 26680,
+    },
+    {
+      "agentId": "id114",
+      "cacheCreation": 876224,
+      "cacheRead": 11516361,
+      "input": 134,
+      "output": 1933,
+    },
+    {
+      "agentId": "id132",
+      "cacheCreation": 134201,
+      "cacheRead": 2006189,
+      "input": 44,
+      "output": 655,
+    },
+    {
+      "agentId": "id208",
+      "cacheCreation": 149826,
+      "cacheRead": 7345946,
+      "input": 124,
+      "output": 2478,
+    },
+    {
+      "agentId": "id232",
+      "cacheCreation": 110660,
+      "cacheRead": 1836633,
+      "input": 46,
+      "output": 3845,
+    },
+    {
+      "agentId": "id299",
+      "cacheCreation": 44311,
+      "cacheRead": 1058320,
+      "input": 270,
+      "output": 2570,
+    },
+  ],
+  "sessionMeta": {
+    "agentCount": 6,
+    "engine": "claude",
+    "nativeId": "id0",
+    "status": "idle",
+  },
+}
+`;

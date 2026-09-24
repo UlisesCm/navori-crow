@@ -126,15 +126,64 @@ function localDay(ts: number): string {
   return `${d.getFullYear()}-${mm}-${dd}`;
 }
 
-/** Numeric fingerprint of a usage block, used to detect discrepant duplicates (D7). */
-function usageFingerprint(usage: CrowEventUsage): string {
-  return [
-    usage.input,
-    usage.output,
-    usage.cacheRead,
-    usage.cacheCreation,
-    usage.cacheCreation1h ?? 0,
-  ].join(":");
+/**
+ * The 5 numeric components a `usageKey` dedupe row tracks (round 4, D7/R13): the component-wise
+ * MAX seen so far for that `(agent, message.id)`, not a single fingerprint — real Claude re-emits
+ * the same `message.id` across streamed chunks with `output_tokens` (and, in principle, any other
+ * component) growing, so "first wins" silently dropped that growth (~21% of `output` undercounted
+ * on the real `cc-2.1.281` fixture, `.claude/progress/impl_f1-b4t3-contract.md` round 4).
+ */
+interface UsageComponents {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreation: number;
+  cacheCreation1h: number;
+}
+
+function usageComponents(usage: CrowEventUsage): UsageComponents {
+  return {
+    input: usage.input,
+    output: usage.output,
+    cacheRead: usage.cacheRead,
+    cacheCreation: usage.cacheCreation,
+    cacheCreation1h: usage.cacheCreation1h ?? 0,
+  };
+}
+
+function isZeroUsageDelta(d: UsageComponents): boolean {
+  return (
+    d.input === 0 &&
+    d.output === 0 &&
+    d.cacheRead === 0 &&
+    d.cacheCreation === 0 &&
+    d.cacheCreation1h === 0
+  );
+}
+
+/**
+ * The positive, component-wise delta from `stored` (the previously-tracked max) to `next` (this
+ * line's usage) — or `null` if ANY component of `next` is below `stored` (an anomaly: something
+ * about this line's usage doesn't fit the "monotonically non-decreasing per component" model, so it
+ * isn't trusted at all, not even for its growing components).
+ */
+function usageDelta(stored: UsageComponents, next: UsageComponents): UsageComponents | null {
+  if (
+    next.input < stored.input ||
+    next.output < stored.output ||
+    next.cacheRead < stored.cacheRead ||
+    next.cacheCreation < stored.cacheCreation ||
+    next.cacheCreation1h < stored.cacheCreation1h
+  ) {
+    return null;
+  }
+  return {
+    input: next.input - stored.input,
+    output: next.output - stored.output,
+    cacheRead: next.cacheRead - stored.cacheRead,
+    cacheCreation: next.cacheCreation - stored.cacheCreation,
+    cacheCreation1h: next.cacheCreation1h - stored.cacheCreation1h,
+  };
 }
 
 function nextStatus(
@@ -281,18 +330,94 @@ function insertDedupe(
   return result.changes > 0;
 }
 
-function readDedupeFp(
+/** Inserts a fresh usage-dedupe row for `usageKey`, seeded at `next` (this line's own components,
+ * since the running max starts at zero). `INSERT OR IGNORE`: `true` only the first time this
+ * `usageKey` is ever seen — same "first insert wins" idiom as {@link insertDedupe}. */
+function insertUsageDedupe(
   db: Database,
   source: EventSource,
   sessionId: string,
   key: string,
-): string | null {
+  next: UsageComponents,
+): boolean {
+  const result = db
+    .query(
+      `INSERT OR IGNORE INTO dedupe
+         (source, session_id, key, fp, u_input, u_output, u_cache_read, u_cache_creation, u_cache_creation_1h)
+       VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      source,
+      sessionId,
+      key,
+      next.input,
+      next.output,
+      next.cacheRead,
+      next.cacheCreation,
+      next.cacheCreation1h,
+    );
+  return result.changes > 0;
+}
+
+/** The component-wise max currently tracked for `usageKey`. Only called after `insertUsageDedupe`
+ * returned `false` (row already exists), so the row is guaranteed present. */
+function readUsageDedupe(
+  db: Database,
+  source: EventSource,
+  sessionId: string,
+  key: string,
+): UsageComponents {
   const row = db
-    .query<{ fp: string | null }, [string, string, string]>(
-      "SELECT fp FROM dedupe WHERE source = ? AND session_id = ? AND key = ?",
+    .query<
+      {
+        u_input: number;
+        u_output: number;
+        u_cache_read: number;
+        u_cache_creation: number;
+        u_cache_creation_1h: number;
+      },
+      [string, string, string]
+    >(
+      `SELECT u_input, u_output, u_cache_read, u_cache_creation, u_cache_creation_1h
+       FROM dedupe WHERE source = ? AND session_id = ? AND key = ?`,
     )
     .get(source, sessionId, key);
-  return row?.fp ?? null;
+  if (row === null) {
+    throw new Error(
+      `usage dedupe row missing for ${source}/${sessionId}/${key} (internal invariant)`,
+    );
+  }
+  return {
+    input: row.u_input,
+    output: row.u_output,
+    cacheRead: row.u_cache_read,
+    cacheCreation: row.u_cache_creation,
+    cacheCreation1h: row.u_cache_creation_1h,
+  };
+}
+
+/** Advances the tracked max for `usageKey` to `next` (called only when every component of `next`
+ * is ≥ the previously stored max, i.e. after {@link usageDelta} returned non-`null`). */
+function updateUsageDedupeMax(
+  db: Database,
+  source: EventSource,
+  sessionId: string,
+  key: string,
+  next: UsageComponents,
+): void {
+  db.query(
+    `UPDATE dedupe SET u_input = ?, u_output = ?, u_cache_read = ?, u_cache_creation = ?, u_cache_creation_1h = ?
+     WHERE source = ? AND session_id = ? AND key = ?`,
+  ).run(
+    next.input,
+    next.output,
+    next.cacheRead,
+    next.cacheCreation,
+    next.cacheCreation1h,
+    source,
+    sessionId,
+    key,
+  );
 }
 
 function incrementStat(db: Database, name: string, by = 1): void {
@@ -574,13 +699,17 @@ export function ingestBatch(
       if (event.usage !== undefined) {
         const usage = event.usage;
         if (event.usageKey !== undefined) {
-          const fp = usageFingerprint(usage);
-          if (insertDedupe(db, source, event.sessionId, event.usageKey, fp)) {
+          const next = usageComponents(usage);
+          if (insertUsageDedupe(db, source, event.sessionId, event.usageKey, next)) {
+            // First line ever seen for this key: the whole usage is the delta (baseline was zero).
             usageForStorage = applyUsage(db, sessionId, agentRowKey, projectKey, usage, event.ts);
           } else {
-            usageForStorage = undefined; // R13: the first usage counted wins
-            const storedFp = readDedupeFp(db, source, event.sessionId, event.usageKey);
-            if (storedFp !== fp) {
+            const storedMax = readUsageDedupe(db, source, event.sessionId, event.usageKey);
+            const delta = usageDelta(storedMax, next);
+            if (delta === null) {
+              // A component went backwards vs. the tracked max: don't trust this line at all, not
+              // even its growing components (D7/R13, round 4) — keep the stored max as-is.
+              usageForStorage = undefined;
               incrementStat(db, "usage_anomalies");
               const anomaly = persistEvent(
                 db,
@@ -599,7 +728,7 @@ export function ingestBatch(
                   ts: event.ts,
                   cwd: event.cwd,
                   error: {
-                    message: `usage-anomaly: ${event.usageKey} kept its first fingerprint`,
+                    message: `usage-anomaly: ${event.usageKey} had a component below the tracked max`,
                     reason: "usage-anomaly",
                     path: pos.path,
                     offset: pos.offset,
@@ -608,11 +737,41 @@ export function ingestBatch(
                 },
               );
               stored.push(anomaly);
+            } else if (isZeroUsageDelta(delta)) {
+              // Every component matches the tracked max exactly: nothing new to count, silently.
+              usageForStorage = undefined;
+            } else {
+              // Every component is ≥ the tracked max, and at least one grew: count only the
+              // positive delta, and advance the tracked max to this line's values.
+              updateUsageDedupeMax(db, source, event.sessionId, event.usageKey, next);
+              const deltaUsage: CrowEventUsage = { ...delta, model: usage.model };
+              usageForStorage = applyUsage(
+                db,
+                sessionId,
+                agentRowKey,
+                projectKey,
+                deltaUsage,
+                event.ts,
+              );
             }
           }
         } else {
           usageForStorage = applyUsage(db, sessionId, agentRowKey, projectKey, usage, event.ts);
         }
+      }
+
+      // A usage-only continuation line (no text, e.g. a streamed `tool_use`-only assistant chunk,
+      // round 4 `map-line.ts` change) whose usage ended up counting nothing this line — either a
+      // zero delta or a rejected anomaly — would otherwise persist as a content-free
+      // `assistant.message` row and fill the timeline with noise. Skip it: the line was still
+      // dedupe-marked above (R16), and, for the anomaly case, the `ingest.error` above already
+      // recorded it — there's nothing else this row would carry.
+      if (
+        event.kind === "assistant.message" &&
+        event.text === undefined &&
+        usageForStorage === undefined
+      ) {
+        continue;
       }
 
       const eventToStore: PartialCrowEvent = { ...event, usage: usageForStorage };

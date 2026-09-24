@@ -22,7 +22,7 @@
   - La UI ordena la vista por `(ts, id)` y usa el `id` solo como cursor.
 - **Identidad de evento (R16, decidido):** `(source, sessionId, sha1 de los bytes de la línea, índice del evento en la línea)`. `seq` es el offset en bytes, solo informativo.
   - Una **clave semántica secundaria**, con alcance de archivo o agente, atrapa la misma línea lógica reescrita con bytes distintos. Cada descarte queda contado en `ingest_stats`.
-  - El usage de Claude cuenta una vez por `message.id` **dentro de su agente** y gana el primero. Un usage discrepante no se descarta en silencio: genera `ingest.error usage-anomaly`.
+  - El usage de Claude se acumula por `message.id` **dentro de su agente** como el máximo componente a componente visto hasta ahora, contando solo el delta positivo de cada línea nueva (round 4: reemisiones del mismo `message.id` con `output` creciente son normales en el streaming real, no un descarte). Un componente que retrocede no se descarta en silencio: genera `ingest.error usage-anomaly`.
   - En Codex, el **primer** `token_count` de cada archivo cuenta su `last_token_usage` y fija la línea base en el acumulado. Así el acumulado heredado de un fork no se cuenta nunca.
 - **Proyecto pegajoso por sesión (R15, decidido):** la sesión toma el `projectKey` de su primer `cwd` y cada evento guarda su propio `cwd`.
 - **Precios (decidido):** vienen de las páginas oficiales de cada proveedor, con fecha. Un modelo que no se pueda verificar queda sin precio.
@@ -268,7 +268,7 @@ Sobre esas dos propiedades se sostienen R4, R22, R24 y R33.
 ### `fixtures/` y `scripts/` (raíz, PLAN §6.3)
 
 - **`fixtures/claude/navori-audit/…`.** Copia del fixture de navori. Cubre R13 y R21.
-- **`fixtures/claude/cc-2.1.267/…`, `fixtures/codex/0.145.0/…` y `fixtures/codex/0.155.1/…`.** Reales y anonimizados. Cubre R11, R12, R14 y R16.
+- **`fixtures/claude/cc-2.1.281/…`, `fixtures/codex/0.145.0/…` y `fixtures/codex/0.155.1/…`.** Reales y anonimizados. Cubre R11, R12, R14 y R16.
 - **`scripts/anonymize-fixture.ts`.** Anonimizador por allowlist de claves. Cubre R11 y R14 y mitiga el riesgo R1.
 
 ---
@@ -367,13 +367,13 @@ Para cubrir el límite:
 **Usage de Claude (R13).**
 
 - `usageKey = "u:" + (agentId ?? "main") + ":" + message.id`, con alcance de sesión y agente. El fixture de navori reusa `sa_1` en dos agentes con usages distintos.
-- Gana el primero: el evento duplicado se guarda **sin `usage`**, de modo que "un evento trae `usage`" equivale a "ese usage se contó".
-- **Guarda que no calla.** `dedupe.fp` guarda la huella del primer usage (`input`, `output`, `cacheRead`, `cacheCreation`, `cacheCreation1h`). Si un duplicado trae otra huella:
-  - se mantiene el primero, como decidió el orchestrator;
-  - se genera `ingest.error` con `reason: "usage-anomaly"` y `error.message` con el `message.id` y las dos huellas numéricas, sin contenido;
-  - se incrementa `ingest_stats.usage_anomalies`.
-
-  La evidencia es de 0/32,798 y 0/8,796 casos, así que no hay ruido esperado.
+- **Regla (round 4, corrige el hallazgo de `.claude/progress/impl_f1-b4t3-contract.md`):** por cada `usageKey`, `dedupe` guarda el **máximo componente a componente** visto hasta ahora (`u_input`, `u_output`, `u_cache_read`, `u_cache_creation`, `u_cache_creation_1h` — esquema v2). Al llegar una línea nueva para esa clave:
+  - si **todos** sus componentes son `≥` el máximo guardado, se cuenta solo el **delta positivo** (componente por componente) contra los totales de sesión/agente/día, y el máximo guardado avanza a los nuevos valores. El evento se guarda con `usage = delta` (no el acumulado), y `costUsd`/`weightedTokens` se calculan sobre ese delta con el mismo `model`;
+  - si son **idénticos** al máximo guardado (delta cero en los 5 componentes), no hay nada nuevo que contar: el evento se guarda **sin `usage`**;
+  - si **algún** componente baja por debajo del máximo guardado, esa línea completa no es de fiar — ni siquiera los componentes que sí crecieron: se mantiene el máximo guardado, el evento se guarda sin `usage`, y se genera `ingest.error` con `reason: "usage-anomaly"` (`error.message` con el `usageKey`), más `ingest_stats.usage_anomalies += 1`.
+  - Así, "un evento trae `usage`" sigue significando "ese delta se contó", y el total acumulado por `usageKey` es siempre el máximo guardado final.
+- **Por qué (evidencia real, `fixtures/claude/cc-2.1.281/`, round 4).** La regla anterior ("gana el primero") asumía que un `message.id` repetido siempre trae el mismo usage — falso: Claude reemite el mismo `message.id` a medida que la respuesta sigue transmitiéndose, y `output_tokens` crece genuinamente entre una reemisión y la siguiente (`input`/`cacheRead`/`cacheCreation` sí se mantienen fijos, son contexto de la petición, no de la respuesta). Sobre el fixture real: 247 `message.id` de `assistant`, 22 con usage distinto entre sus líneas, **los 22 solo crecen en `output`, nunca decrecen**; con "gana el primero" la suma de `output` daba 30,170 en vez de 38,161 (~21% menos), y **20 de esos 22 casos ni siquiera se contaban como anomalía**, porque `mapAssistant` (Claude) descartaba en silencio las líneas de continuación sin texto (`tool_use`-only) que traían ese usage más alto. `map-line.ts` ahora empuja un `assistant.message` (sin texto) por cualquier línea de `assistant` que traiga `usage`, así lleguen o no a la store; la store nunca persiste un evento de solo-usage cuyo delta terminó en cero, para no llenar la línea de tiempo de eventos vacíos.
+- **El único caso de anomalía real** sería un componente que retrocede frente al máximo guardado — 0 casos en este fixture real, igual que en la evidencia original.
 
 **Usage de Codex (corrige el BLOCKER 1).**
 
@@ -630,7 +630,7 @@ CREATE TABLE ingest_offsets (
 CREATE TABLE dedupe (
   source TEXT NOT NULL, session_id TEXT NOT NULL,
   key TEXT NOT NULL,                 -- 'l:<sha1>:<i>' | 's:<agent>:<semanticKey>' | 'u:<agent>:<message.id>'
-  fp TEXT,                           -- usage fingerprint, 'u:' keys only
+  fp TEXT,                           -- unused since schema v2 (round 4); 'u:' keys use u_* instead
   PRIMARY KEY (source, session_id, key)
 ) WITHOUT ROWID;
 CREATE TABLE project_daily (
@@ -646,14 +646,30 @@ CREATE TABLE ingest_stats (
 
 La columna es `byte_offset` y no `offset` porque `OFFSET` es palabra reservada de SQL.
 
+**Esquema v2 (`migrations.ts`, migración 2; round 4, D7/R13).** Aditiva, no rompe una DB existente:
+
+```sql
+ALTER TABLE dedupe ADD COLUMN u_input INTEGER;
+ALTER TABLE dedupe ADD COLUMN u_output INTEGER;
+ALTER TABLE dedupe ADD COLUMN u_cache_read INTEGER;
+ALTER TABLE dedupe ADD COLUMN u_cache_creation INTEGER;
+ALTER TABLE dedupe ADD COLUMN u_cache_creation_1h INTEGER;
+```
+
+5 columnas nulas: el máximo componente a componente visto hasta ahora para una fila `u:` (`NULL` en las filas `l:`/`s:`, que no las usan). `fp` se deja en la tabla (sigue sirviendo a `l:`/`s:`, que no la usan tampoco, siempre `NULL`) pero deja de escribirse en filas `u:` — ya no hace falta una huella única, hace falta el máximo por componente para poder calcular el delta.
+
 **`ingestBatch({ path, inode, nextOffset, state, events })` corre en una sola transacción.** Por cada evento pendiente:
 
 1. `INSERT OR IGNORE` de la clave `l:` en `dedupe`. Si no inserta nada, se salta (R16).
 2. Si trae `semanticKey`: `INSERT OR IGNORE` de la clave `s:`. Si no inserta, se salta el evento y se hace `semantic_duplicates += 1` (D7).
 3. Se resuelve la sesión y su proyecto (D8) y se asegura la fila del agente.
-4. Si trae `usage` y `usageKey`: `INSERT OR IGNORE` de la clave `u:` con su `fp`.
-   - Si no inserta, se quita el `usage`. Si además el `fp` guardado es distinto, se agrega un `ingest.error usage-anomaly` (clave `l:<sha1>:e<n>`) y se hace `usage_anomalies += 1`.
-   - Si el `usage` sobrevive, se sellan `costUsd` y `weightedTokens` y se suma en sesión, agente y día.
+4. Si trae `usage` y `usageKey`: `INSERT OR IGNORE` de la clave `u:`, sembrada con los componentes de esta línea.
+   - Si inserta (primera vez que se ve esta clave), el usage completo es el delta: se sellan `costUsd`/`weightedTokens` y se suma en sesión, agente y día.
+   - Si no inserta, se lee el máximo guardado y se compara componente a componente contra esta línea (round 4):
+     - si algún componente bajó, se quita el `usage`, se agrega un `ingest.error usage-anomaly` (clave `l:<sha1>:e<n>`) y se hace `usage_anomalies += 1` — el máximo guardado no cambia;
+     - si todos son iguales (delta cero), se quita el `usage`, sin error;
+     - si todos son `≥` y al menos uno creció, se cuenta solo el delta positivo (`costUsd`/`weightedTokens` sobre el delta), y el máximo guardado avanza a los nuevos valores.
+   - Un evento `assistant.message` sin texto y sin `usage` contado (delta cero o anomalía) no se persiste — evita llenar la línea de tiempo con filas vacías.
 5. Estado, `last_event_at`, `last_prompt`, `last_error_json` y los metadatos de `agent.*`, con la resolución del padre para `depth > 1`.
 6. Se asigna el `id` ULID y se hace `INSERT` en `events`. Por cada `ingest.error`, `errors:<reason> += 1`.
 
@@ -738,18 +754,21 @@ Estado persistido: `{ v, started, cwd, lastTs, openCalls: {callId: {name, ts, su
 |---|---|
 | Primera línea con `timestamp` de un **main** | `session.start`, seguido de los eventos de la línea |
 | Primera línea con `timestamp` de un **agente** | `agent.start` con `agent` tomado del sidecar si existía. `parentAgentId = null` si `depth ≤ 1`; si `depth > 1`, lo resuelve el store por `call_id` |
-| `assistant` | `assistant.message` si hay `text`/`thinking` o si es la primera línea de su `message.id` (lleva `usage`, `usageKey = u:<agentId\|main>:<message.id>` y `model`). Además, un `tool.pre` por cada `tool_use`, que se registra en `openCalls` |
+| `assistant` | `assistant.message` si hay `text`/`thinking`, si es la primera línea de su `message.id`, **o si la línea trae `usage`** (round 4: una continuación `tool_use`-only de un `message.id` ya visto también se empuja, sin texto, para que su usage llegue a la store — el store descarta el evento si termina sin `usage` contado). Lleva `usage`, `usageKey = u:<agentId\|main>:<message.id>` y `model`; el store cuenta el **delta componente a componente** contra el máximo ya visto para esa clave (D7). Además, un `tool.pre` por cada `tool_use`, que se registra en `openCalls` (nunca lleva `usage`, así que no hay doble conteo con `assistant.message`) |
 | `user` con bloques `tool_result` | Por bloque, `tool.post` (si `is_error !== true`) o `tool.error` (con hasta 1 KiB). `name` y `ms` salen de `openCalls` |
 | …y `toolUseResult` con `{agentId, status: "completed"}` | Además, `agent.stop` (`outcome` y `type` desde `openCalls`) |
 | …y `toolUseResult` con `{agentId, status: "async_launched"}` | `spawned[tool_use_id] = agentId` |
-| `user` con `origin.kind: "task-notification"` y `<tool-use-id>` + `<status>` | `agent.stop` vía `spawned` |
+| `user` con `origin.kind: "task-notification"` y `<tool-use-id>` + `<status>` en `message.content` (build antigua) | `agent.stop` vía `spawned` |
+| `attachment` con `attachment.type: "queued_command"` y `attachment.commandMode: "task-notification"`, `<tool-use-id>` + `<status>` en `attachment.prompt` (**cc-2.1.281**) | `agent.stop` vía `spawned`, mismo mecanismo (`stopFromNotificationText`, idempotente por `toolUseId`) |
 | `user` que es prompt | `prompt` (≤ 8 KiB). Es prompt si `origin.kind === "human"`, o si `promptSource` existe y no es `"system"`, o, sin ambos campos, si el contenido es string, no es `isMeta`/`isCompactSummary` y no trae `toolUseResult` |
 | `system` con `subtype: "compact_boundary"` | `compact` |
-| `attachment`, `system` con otro subtype, `user` restantes | Nada (sobre abierto) |
-| Tipos de estado conocidos | Nada |
+| `attachment` con cualquier otro subtype, `system` con otro subtype, `user` restantes | Nada (sobre abierto) |
+| Tipos de estado conocidos (incluye `queue-operation`, que en cc-2.1.281 repite los mismos tags `<tool-use-id>`/`<status>` que la notificación real — se ignora a propósito, no dispara `agent.stop`) | Nada |
 | `type` desconocido / JSON inválido / forma inválida | Error `unknown-type` / `invalid-json` / `bad-shape` (R10) |
 
 `ts` es `Date.parse(timestamp)`, luego `state.lastTs` y, en último caso, la hora de ingesta. El sidecar se lee al abrir el archivo del agente y se relee cuando cambia (`upsertAgentMeta`, sin evento).
+
+**Nota cc-2.1.281 (round 2 de B4.T3, `.claude/progress/impl_f1-b4t3-contract.md`):** una captura real de Claude Code 2.1.281 mostró que la señal de cierre asíncrono ya no llega solo como la línea `user`/`origin.kind: "task-notification"` de arriba — también llega como la línea `attachment`/`queued_command` de la tabla, y ambas coexisten (el adaptador soporta las dos). Se descartó `origin.kind: "peer"` + `handback: true` (el relevo de `SubagentHandback` hacia el agente principal, sin campo de estado) como señal de cierre: no es la canónica y se ignora. El anonimizador (`scripts/anonymize/claude.ts`) preserva la correlación `<tool-use-id>` para ambas formas (`anonymizeTaskNotificationContent`, ahora también sobre `attachment.prompt`) y allowlista `commandMode`.
 
 ## Mapeo Codex (`packages/adapters/codex/src/map-line.ts`) — R14
 
@@ -796,7 +815,8 @@ Limitaciones de F1:
 | Línea parcial | Se queda sin consumir | R8 |
 | Truncado, rotación o inode nuevo | Reingesta desde 0 | R7; identidad de contenido (D7) |
 | **Misma línea lógica con bytes distintos** | El hash no la reconoce | `semanticKey` con alcance de agente: descarte más contador. Límite documentado entre archivos (D7) |
-| **Usage de `message.id` discrepante (Claude)** | Se mantiene el primero | `ingest.error usage-anomaly` más contador (D7) |
+| **Usage de `message.id` que crece entre reemisiones (Claude)** | Normal en streaming real (round 4): se cuenta solo el delta positivo, una vez, sin evento vacío | Máximo componente a componente por `usageKey` (D7) |
+| **Usage de `message.id` con un componente que retrocede (Claude)** | Se mantiene el máximo ya guardado; la línea entera no se cuenta | `ingest.error usage-anomaly` más contador (D7) |
 | **Fork de Codex con acumulado heredado** | Inflaría el primer delta | Primer `token_count` = `last_token_usage` y línea base (D7) |
 | **Acumulado de Codex que retrocede** | Delta negativo | `last_token_usage`, nueva línea base y `usage-anomaly` |
 | Línea de más de 16 MiB | `ingest.error line-too-long` | D5 |
@@ -838,7 +858,7 @@ Ningún test lee `~/.claude`, `~/.codex` ni `~/.crow` reales: todo pasa por `loa
 | DB legible por otros | `db.test.ts`: con umask 022, el directorio queda en 0700 y la DB, `-wal` y `-shm` en 0600 | R3 |
 | Totales inconsistentes | `store.test.ts`: los totales de sesión, agente y día coinciden con la suma de `usage`; una transacción fallida no deja rastro | R4 |
 | Doble conteo o falso dedupe de `message.id` | `navori-parity.test.ts`: principal {11, 22, 103, 54}, `withmeta1` {7, 8, 9, 1000}, `orphan2` {1, 1, 1, 500}, sesión {19, 31, 113, 1554}; 2 `ingest.error` (divergencia documentada frente a navori) | R13, R16 |
-| **Usage discrepante tapado en silencio** | `store.test.ts`: un `message.id` duplicado con usage distinto (sintético) cuenta el primero, genera 1 `ingest.error usage-anomaly` y deja `usageAnomalies = 1` en `/api/stats` | R13 |
+| **Usage que crece o retrocede tapado en silencio** | `store.test.ts` (round 4): un `message.id` duplicado cuyo usage creció cuenta solo el delta, una vez, sin anomalía; uno idéntico es un no-op sin evento fantasma; uno con un componente que retrocede mantiene el máximo guardado, genera 1 `ingest.error usage-anomaly` y deja `usageAnomalies = 1` en `/api/stats`; un re-ingest desde offset 0 y un crecimiento entre dos `ingestBatch` distintos no duplican el conteo | R13 |
 | Duplicados al reiniciar o falsos dedupes | `identity.test.ts`: (a) invariancia de cortes; (b) reingesta sin offsets sin eventos nuevos; (c) copia a un inode nuevo sin eventos nuevos; (d) truncado y reescritura con contenido distinto que sí guarda | R6, R7, R16 |
 | **Misma línea lógica con bytes distintos** | `identity.test.ts`: (e) un par real anonimizado de `user_message` de Codex que solo difiere en `timestamp` se guarda una vez y deja `semanticDuplicates = 1`; (f) una línea de Claude con el mismo `uuid` y las claves reordenadas se guarda una vez; (g) el mismo `payload.id` en dos archivos de agentes distintos **no** se descarta (alcance de agente) | R16 |
 | Media línea ingerida | `line-reader.test.ts`, incluido UTF-8 multibyte en el corte y una línea mayor que el chunk | R8 |
@@ -868,7 +888,7 @@ Ningún test lee `~/.claude`, `~/.codex` ni `~/.crow` reales: todo pasa por `loa
 
 **Fixtures que hay que crear.** Todos anonimizados con `scripts/anonymize-fixture.ts`, que usa una allowlist de claves estructurales. Cualquier otra string se reemplaza por un marcador. Los `cwd` se reescriben a `/tmp/crow-fixture/<repo>`, los timestamps se desplazan de forma consistente y se eliminan los UUID de cuenta. **Los números de usage no se tocan.**
 
-1. **`fixtures/claude/cc-2.1.267/`.** Principal más un subagente síncrono y otro asíncrono con sus `meta.json`: prompts `typed`/`queued`, duplicados de `message.id`, `is_error`, `compact_boundary`, `attachment` y tipos de estado.
+1. **`fixtures/claude/cc-2.1.281/`.** Sesión real capturada y anonimizada: principal más 5 subagentes asíncronos con sus `meta.json` y prompts en cola. Cubre el camino asíncrono real (`toolUseResult.status: "async_launched"`, `is_error` en varios subagentes, duplicados de `message.id`). **Hallazgo round 1 (ver `.claude/progress/impl_f1-b4t3-contract.md`):** la captura real no contiene ninguna línea `user`/`origin.kind: "task-notification"` — la única forma que `map-line.ts` conocía hasta entonces. **Round 2:** una inspección estructural directa del transcript de origen (solo paths/kinds, sin contenido) identificó la señal real: una línea `attachment`/`queued_command`/`commandMode: "task-notification"`, con los mismos tags `<tool-use-id>`/`<status>` en `attachment.prompt`. `map-line.ts` y el anonimizador ya soportan esta forma (§ Mapeo Claude, nota cc-2.1.281) — pero **el fixture en disco sigue anonimizado con la versión anterior del anonimizador**, así que su `attachment.prompt` sigue siendo un marcador opaco sin la correlación. `claude/contract.test.ts` ya afirma el estado objetivo (5 `agent.stop`) y falla a propósito contra el fixture desactualizado hasta que se regenere con `scripts/anonymize-fixture.ts ... --force` sobre la sesión original y se actualice el snapshot. El subagente síncrono, `compact_boundary` y el `is_error` sintético quedan cubiertos por `claude/subagents.test.ts` porque las sesiones recientes de Claude Code lanzan subagentes en modo asíncrono y ninguna capturada tuvo compactación.
 2. **`fixtures/codex/0.145.0/`.** Un principal legacy (solo `token_count`, con totales repetidos), un fork "fresco" sin start ordinal y **el fork con acumulado arrastrado**, recortados a sus primeros `token_count`.
 3. **`fixtures/codex/0.155.1/`.** Principal, un `thread_spawn` fork con `subagent_history_start_ordinal`, un `guardian` y un bloque con un `user_message` reemitido que solo difiere en `timestamp`.
 4. **`fixtures/claude/navori-audit/`.** Copia literal.
