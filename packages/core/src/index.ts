@@ -74,3 +74,51 @@ export type {
 export { createUlidFactory, ulidTime } from "./ulid";
 export type { ClockFn } from "./ulid";
 export { weightedTokens } from "./weighted-tokens";
+export {
+  defaultLoadSidecar,
+  lstatFile,
+  MAX_LINES_PER_STEP,
+  processFile,
+  processSidecar,
+} from "./tailer/ingest";
+export type {
+  FileStat,
+  ProcessFileDeps,
+  ProcessFileResult,
+  SidecarLoader,
+  StatFn,
+} from "./tailer/ingest";
+export {
+  DEFAULT_CHUNK_BYTES,
+  DEFAULT_MAX_LINE_BYTES,
+  readChunk,
+  readLines,
+} from "./tailer/line-reader";
+export type {
+  ChunkReader,
+  LineEntry,
+  RawLine,
+  ReadLinesOptions,
+  ReadLinesResult,
+  TooLongLine,
+} from "./tailer/line-reader";
+export {
+  discoverFiles,
+  HotSet,
+  planBackfill,
+  pollPaths,
+  probeRecursiveWatchSupport,
+  realInterval,
+  runBackfillOnce,
+  Scheduler,
+  TailerScheduler,
+  watchRoot,
+} from "./tailer/tailer";
+export type {
+  BackfillOptions,
+  BackfillResult,
+  DiscoveredFile,
+  IntervalScheduler,
+  TailerDeps,
+  TailerSchedulerOptions,
+} from "./tailer/tailer";

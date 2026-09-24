@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-24 12:40 — orchestrator — F1: lote B3 (tailer genérico)
+- Cambios: `packages/core/src/tailer/` (`line-reader.ts` por bytes con tope de 1,000 líneas u 8 MiB por paso; `ingest.ts` con inode, offset, truncado y `ingest.error`; `tailer.ts` con discovery, backfill por ventana y por sesión, poll, `fs.watch` como pista, rescan y `Scheduler`/`TailerScheduler` con prioridad de archivos calientes, re-encolado de archivos sucios e intervalos inyectables). Adaptador de prueba en `tailer/testing/`. Cubre R5–R10, R16, R22.
+- Quality gate: ✅ `bun run check` verde (101 pass / 0 fail) en macOS y `bun test` verde en Linux (docker `oven/bun:1.4.2`), Pass 2 del reviewer.
+- Notas: la primera revisión pidió cambios (faltaban el scheduler y el tope de 8 MiB por paso). B5 solo arma `TailerScheduler` con los intervalos de `CrowConfig`; `stop()` no espera el paso en curso, a considerar en el apagado de B5. Los casos (e)/(f) de identidad comparten un test genérico; B4/B7 deben agregar los suyos con fixtures reales.
+- Commit / PR: feat/f1-b3-tailer
+
 ## 2026-09-24 11:10 — orchestrator — F1: lote B2 (store SQLite)
 - Cambios: `packages/core/src/config.ts`, `bus.ts` y `store/` (`db.ts` con WAL y permisos 0700/0600 incluidos `-wal`/`-shm`; `migrations.ts` con `PRAGMA user_version` transaccional y esquema v1; `store.ts` con `ingestBatch`, `upsertAgentMeta`, `sweepIdle`, `hasEvent`, `stats` y lecturas para la API). Cubre R1–R4, R13, R15–R19, R22.
 - Quality gate: ✅ `bun run check` verde (64 pass / 0 fail), Pass 2 del reviewer.

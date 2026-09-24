@@ -1,0 +1,195 @@
+import { Database } from "bun:sqlite";
+import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { bindAdapter } from "../adapter";
+import { EventBus } from "../bus";
+import { migrate } from "../store/migrations";
+import { createUlidFactory } from "../ulid";
+import { Scheduler, TailerScheduler } from "./tailer";
+import type { IntervalScheduler } from "./tailer";
+import { makeTestAdapter, testLine } from "./testing/test-adapter";
+
+function freshDb(): Database {
+  const db = new Database(":memory:");
+  migrate(db);
+  return db;
+}
+
+function withTempDir(fn: (dir: string) => Promise<void> | void) {
+  const dir = mkdtempSync(join(tmpdir(), "crow-scheduler-"));
+  return Promise.resolve(fn(dir)).finally(() => rmSync(dir, { recursive: true, force: true }));
+}
+
+const NOW = Date.now();
+
+describe("Scheduler: hot before backfill (D6)", () => {
+  test("a hot path is drained before any pending backfill path, even if it was queued later", async () => {
+    // Covers: R5, R9
+    const scheduler = new Scheduler();
+    scheduler.enqueueBackfill("/backfill-1");
+    scheduler.enqueueBackfill("/backfill-2");
+    scheduler.enqueueHot("/hot-1");
+
+    const order: string[] = [];
+    await scheduler.drain(async (path) => {
+      order.push(path);
+    });
+
+    expect(order).toEqual(["/hot-1", "/backfill-1", "/backfill-2"]);
+  });
+
+  test("a hint that arrives for an already-queued backfill path promotes it ahead of the rest", async () => {
+    // Covers: R5, R9
+    const scheduler = new Scheduler();
+    scheduler.enqueueBackfill("/backfill-1");
+    scheduler.enqueueBackfill("/backfill-2");
+    scheduler.enqueueHot("/backfill-2"); // a watch hint arrives for a path already queued for backfill
+
+    const order: string[] = [];
+    await scheduler.drain(async (path) => {
+      order.push(path);
+    });
+
+    expect(order).toEqual(["/backfill-2", "/backfill-1"]);
+  });
+});
+
+describe("Scheduler: dirty re-queue (D6)", () => {
+  test("a path hinted again while it's mid-step is re-queued as hot once that step ends, not processed concurrently", async () => {
+    // Covers: R5, R6
+    const scheduler = new Scheduler();
+    scheduler.enqueueHot("/a");
+    scheduler.enqueueBackfill("/b");
+
+    const order: string[] = [];
+    let concurrentCallsForA = 0;
+    let maxConcurrentForA = 0;
+    let hintedOnce = false;
+
+    await scheduler.drain(async (path) => {
+      order.push(path);
+      if (path === "/a" && !hintedOnce) {
+        hintedOnce = true;
+        concurrentCallsForA++;
+        maxConcurrentForA = Math.max(maxConcurrentForA, concurrentCallsForA);
+        // While "/a" is still mid-step, a fresh hint arrives for it (e.g. another watch event).
+        scheduler.enqueueHot("/a");
+        await Promise.resolve(); // yield once, no real timer — just enough to prove no re-entrant call happens
+        concurrentCallsForA--;
+      }
+    });
+
+    expect(maxConcurrentForA).toBe(1); // never processed concurrently with itself
+    // The re-queued dirty path goes back onto the *hot* queue (a fresh hint is hot by
+    // definition), so it's drained again before the still-pending backfill path "/b".
+    expect(order).toEqual(["/a", "/a", "/b"]);
+  });
+
+  test("hinting a path that isn't mid-step just queues it normally (no spurious dirty re-queue)", async () => {
+    // Covers: R5
+    const scheduler = new Scheduler();
+    scheduler.enqueueHot("/a");
+
+    const order: string[] = [];
+    await scheduler.drain(async (path) => {
+      order.push(path);
+    });
+
+    expect(order).toEqual(["/a"]);
+  });
+});
+
+function fakeIntervalScheduler(): {
+  scheduleInterval: IntervalScheduler;
+  /** Invokes every registered callback for `ms` and waits for all of them to settle — no real timer involved. */
+  tick: (ms: number) => Promise<void>;
+  cancelled: boolean[];
+} {
+  const registered: Array<{ fn: () => void | Promise<void>; ms: number }> = [];
+  const cancelled: boolean[] = [];
+  const scheduleInterval: IntervalScheduler = (fn, ms) => {
+    const index = registered.length;
+    registered.push({ fn, ms });
+    cancelled.push(false);
+    return () => {
+      cancelled[index] = true;
+    };
+  };
+  return {
+    scheduleInterval,
+    cancelled,
+    tick: async (ms: number) => {
+      for (const entry of registered) if (entry.ms === ms) await entry.fn();
+    },
+  };
+}
+
+describe("TailerScheduler: injectable timers and stop() (D4, D6)", () => {
+  test("start() registers a poll and a rescan interval, and stop() cancels both without any real waiting", async () => {
+    // Covers: R5, R9
+    await withTempDir(async (dir) => {
+      const db = freshDb();
+      const bus = new EventBus();
+      const adapter = bindAdapter(makeTestAdapter());
+      const fake = fakeIntervalScheduler();
+
+      const scheduler = new TailerScheduler({
+        db,
+        bus,
+        roots: [{ root: dir, adapter }],
+        nextId: createUlidFactory("00000000000000000000000000", () => NOW),
+        now: () => NOW,
+        idleMs: 5 * 60_000,
+        backfillWindowMs: 24 * 60 * 60_000,
+        pollIntervalMs: 1000,
+        rescanIntervalMs: 30_000,
+        scheduleInterval: fake.scheduleInterval,
+      });
+
+      await scheduler.start();
+      expect(fake.cancelled).toEqual([false, false]);
+
+      scheduler.stop();
+      expect(fake.cancelled).toEqual([true, true]);
+    });
+  });
+
+  test("a hinted path is ingested once the poll tick drains the queue, without any real setInterval/sleep", async () => {
+    // Covers: R5
+    await withTempDir(async (dir) => {
+      const path = join(dir, "hot.jsonl");
+      writeFileSync(path, `${testLine({ sessionId: "s1", ts: NOW, text: "hello" })}\n`);
+
+      const db = freshDb();
+      const bus = new EventBus();
+      const adapter = bindAdapter(makeTestAdapter());
+      const fake = fakeIntervalScheduler();
+      const received: unknown[] = [];
+      bus.subscribe((events) => received.push(...events));
+
+      const scheduler = new TailerScheduler({
+        db,
+        bus,
+        roots: [{ root: dir, adapter }],
+        nextId: createUlidFactory("00000000000000000000000000", () => NOW),
+        now: () => NOW,
+        idleMs: 5 * 60_000,
+        backfillWindowMs: 24 * 60 * 60_000,
+        pollIntervalMs: 1000,
+        rescanIntervalMs: 30_000,
+        scheduleInterval: fake.scheduleInterval,
+      });
+
+      await scheduler.start(); // runs an initial backfill pass, which already ingests the file once
+      expect(received).toHaveLength(1);
+
+      scheduler.hint(path); // simulate a fresh watch hint for the same, now-unchanged file
+      await fake.tick(1000); // drive the poll tick manually — no real timer, no sleep
+
+      expect(received).toHaveLength(1); // nothing new to ingest, but it didn't throw or duplicate
+      scheduler.stop();
+    });
+  });
+});
