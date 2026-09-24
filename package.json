@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "packageManager": "bun@1.4.2",
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": ["apps/*", "packages/*", "packages/adapters/*"],
   "scripts": {
     "dev": "bun run --filter '*' dev",
     "build": "bun run --filter '*' build",

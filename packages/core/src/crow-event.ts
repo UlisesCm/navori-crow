@@ -48,8 +48,13 @@ export interface CrowEventUsage {
   output: number;
   cacheRead: number;
   cacheCreation: number;
+  /** Subset of `cacheCreation` billed at the 1h TTL rate (F1: 100% of writes). */
+  cacheCreation1h?: number;
   model?: string;
+  /** Stamped by core from the pricing table; undefined = model not priced (R20). */
   costUsd?: number;
+  /** Stamped by core with the ported navori-harness formula (R21). */
+  weightedTokens?: number;
 }
 
 /** Harness hook details attached to `hook` events. */
@@ -61,12 +66,38 @@ export interface CrowEventHook {
   reason?: string;
 }
 
+/** Subagent lifecycle details attached to `agent.start` / `agent.stop` events. */
+export interface CrowEventAgent {
+  type?: string;
+  description?: string;
+  spawnCallId?: string;
+  depth?: number;
+  outcome?: "completed" | "failed" | "killed";
+}
+
+/** Why a line or event was rejected or flagged during ingestion. */
+export type IngestErrorReason =
+  | "invalid-json"
+  | "unknown-type"
+  | "bad-shape"
+  | "line-too-long"
+  | "usage-anomaly";
+
+/** Error details attached to `tool.error` / `ingest.error` events. */
+export interface CrowEventError {
+  message: string; // short, <= 1 KiB, no source content
+  reason?: IngestErrorReason; // ingest.error only
+  path?: string;
+  offset?: number;
+  line?: number;
+}
+
 /**
  * Neutral, engine-agnostic event emitted by any ingestion lane.
  * See PLAN.md §7.1 for the full data model rationale.
  */
 export interface CrowEvent {
-  id: string; // ulid; global order
+  id: string; // ULID; global ingestion order
   engine: EngineId;
   source: EventSource;
   projectKey: string; // stable hash (see project-key.ts / PLAN.md §7.3)
@@ -82,4 +113,7 @@ export interface CrowEvent {
   hook?: CrowEventHook;
   text?: string; // prompt/message (subject to redaction)
   raw?: unknown; // original payload (optional, trimmed)
+  cwd?: string; // the event's own cwd (R15)
+  agent?: CrowEventAgent; // agent.start / agent.stop
+  error?: CrowEventError; // tool.error / ingest.error
 }
