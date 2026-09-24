@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-24 16:45 — orchestrator — F1: lote B7.T1 (adaptador Codex)
+- Cambios: paquete nuevo `packages/adapters/codex` (`@crow/adapter-codex`: `adapter.ts`, `map-line.ts`, `index.ts`) según § Mapeo Codex: estado por archivo, línea base de tokens (el primer `token_count` cuenta `last_token_usage`, delta 0 sin evento, retroceso con `usage-anomaly`), historia heredada saltada por `subagent_history_start_ordinal`, `semanticKey` y raíz desde `CODEX_HOME`. Los hilos toman `parentAgentId` de `thread_spawn.parent_thread_id` cuando no es la sesión raíz y `depth` de `thread_spawn.depth`. `tasks.md` marca B7.T1. Cubre R14 y R16.
+- Quality gate: ✅ `bun run check` verde (152 pass / 0 fail), Pass 2 del reviewer.
+- Notas: la primera revisión rechazó aplanar todos los hilos a `depth = 1` sin padre: según la evidencia del diseño, un tercio de los subagentes cuelga de otro hilo. Codex nunca pone `usageKey` ni `spawnCallId`, así que no entra al conteo por máximo de Claude ni a la resolución de padre por `call_id`; el store enlaza por `parentAgentId` directo aunque el archivo del hijo llegue antes. Tests sintéticos: los fixtures reales son B7.T2, que además debe fijar la ruta exacta de `parent_thread_id` y `depth` (`FIXME(B7.T2)` en `map-line.ts`).
+- Commit / PR: feat/f1-b7-adapter-codex
+
 ## 2026-09-24 16:41 — orchestrator — F1: lote B5.T1 (arranque del servidor y guard)
 - Cambios: `apps/server/src/adapters.ts` (`ENGINE_ADAPTERS` con Claude), `app.ts` (`startApp` en el orden del diseño: DB y migración, semilla del ULID y `sweepIdle`, `Bun.serve` en loopback, tailer y sweeper; `stop()` apaga sweeper, tailer, servidor y DB en ese orden), `guard.ts` (Host y Origin según D14), `server.ts` (`isApiPath` como único predicado para el guard; `/healthz` y estáticos fuera), `index.ts` con `loadConfig`, y modo dev (Vite en 5173 con `strictPort`, `CROW_ALLOWED_ORIGINS`). En core, `TailerScheduler.stop()` pasa a async y espera el paso en curso sin relanzar su error. `tasks.md` marca B1.T1–B4.T2, que ya estaban mergeados, y B5.T1. Cubre R2 y R28.
 - Quality gate: ✅ `bun run check` verde (155 pass / 0 fail), Pass 2 del reviewer.

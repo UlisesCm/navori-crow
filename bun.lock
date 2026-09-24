@@ -37,6 +37,13 @@
         "@crow/core": "workspace:*",
       },
     },
+    "packages/adapters/codex": {
+      "name": "@crow/adapter-codex",
+      "version": "0.0.0",
+      "dependencies": {
+        "@crow/core": "workspace:*",
+      },
+    },
     "packages/core": {
       "name": "@crow/core",
       "version": "0.0.0",
@@ -52,6 +59,8 @@
   },
   "packages": {
     "@crow/adapter-claude": ["@crow/adapter-claude@workspace:packages/adapters/claude"],
+
+    "@crow/adapter-codex": ["@crow/adapter-codex@workspace:packages/adapters/codex"],
 
     "@crow/core": ["@crow/core@workspace:packages/core"],
 
