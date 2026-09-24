@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-24 16:45 — orchestrator — F1: lote B7.T1 (adaptador Codex)
+- Cambios: paquete nuevo `packages/adapters/codex` (`@crow/adapter-codex`: `adapter.ts`, `map-line.ts`, `index.ts`) según § Mapeo Codex: estado por archivo, línea base de tokens (el primer `token_count` cuenta `last_token_usage`, delta 0 sin evento, retroceso con `usage-anomaly`), historia heredada saltada por `subagent_history_start_ordinal`, `semanticKey` y raíz desde `CODEX_HOME`. Los hilos toman `parentAgentId` de `thread_spawn.parent_thread_id` cuando no es la sesión raíz y `depth` de `thread_spawn.depth`. `tasks.md` marca B7.T1. Cubre R14 y R16.
+- Quality gate: ✅ `bun run check` verde (152 pass / 0 fail), Pass 2 del reviewer.
+- Notas: la primera revisión rechazó aplanar todos los hilos a `depth = 1` sin padre: según la evidencia del diseño, un tercio de los subagentes cuelga de otro hilo. Codex nunca pone `usageKey` ni `spawnCallId`, así que no entra al conteo por máximo de Claude ni a la resolución de padre por `call_id`; el store enlaza por `parentAgentId` directo aunque el archivo del hijo llegue antes. Tests sintéticos: los fixtures reales son B7.T2, que además debe fijar la ruta exacta de `parent_thread_id` y `depth` (`FIXME(B7.T2)` en `map-line.ts`).
+- Commit / PR: feat/f1-b7-adapter-codex
+
 ## 2026-09-24 15:55 — orchestrator — F1: lote B4.T3 (fixture real de Claude y regla de usage)
 - Cambios: anonimizador `scripts/anonymize-fixture.ts` (workspace `scripts`), fixture real anonimizado `fixtures/claude/cc-2.1.281/` (sesión principal y 5 subagentes async), `fixtures/hygiene.test.ts` (sin PII y contrato estructural), `claude/contract.test.ts` con oráculo propio y snapshot. `map-line.ts` mapea el fin de subagente async de 2.1.281 (`attachment` `queued_command` con `commandMode: "task-notification"`) sin romper la forma anterior. Regla D7/R13 nueva: por `(agente, message.id)` el usage contado es el máximo por componente, una línea mayor suma solo el delta y `usage-anomaly` queda para cuando un componente decrece; migración v2 aditiva del store (`u_*` en `dedupe`). Cubre R11–R13.
 - Quality gate: ✅ `bun run check` verde (134 pass / 0 fail), Pass 2 del reviewer.
