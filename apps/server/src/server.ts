@@ -1,6 +1,10 @@
 import { join, normalize, sep } from "node:path";
 import type { Server } from "bun";
+import type { Database } from "bun:sqlite";
+import type { ClockFn, EventBus, IntervalScheduler } from "@crow/core";
+import { routeApi } from "./api";
 import { checkRequest } from "./guard";
+import { createStreamResponse, StreamRegistry } from "./sse";
 
 /** Directory holding the web app's build output (see apps/web/vite.config.ts). */
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
@@ -40,20 +44,56 @@ export function isApiPath(pathname: string): boolean {
 }
 
 /**
- * `/api/*` routing lands in B5.T2 (REST + SSE): until then, any request that
- * clears the guard falls through to a plain 404 here.
+ * Everything `/api/*` needs to actually serve a request (B5.T2): the store,
+ * the bus for `/api/stream`, and the knobs REST/SSE need but must not read
+ * for themselves (testability, same rationale as `IngestBatchDeps`).
  */
-function handleApi(): Response {
-  return new Response("Not Found", { status: 404 });
+export interface ApiContext {
+  db: Database;
+  bus: EventBus;
+  now: ClockFn;
+  idleMinutes: number;
+  backfillHours: number;
+  scheduleInterval: IntervalScheduler;
+  registry: StreamRegistry;
+  heartbeatMs?: number;
+  streamPageSize?: number;
 }
 
 /**
- * Builds `handleRequest`, closed over the server's `allowedOrigins` (D14).
- * `port` is read from `server.port` on each call rather than captured here,
- * since tests may bind an OS-assigned port (`startServer(0)`).
+ * Dispatches an already-guarded `/api/*` request: `/api/stream` goes to
+ * `sse.ts`, everything else to `api.ts`'s REST router.
+ */
+function handleApi(req: Request, server: Server<unknown>, url: URL, api: ApiContext): Response {
+  if (url.pathname === "/api/stream") {
+    return createStreamResponse(req, server, url, {
+      db: api.db,
+      bus: api.bus,
+      scheduleInterval: api.scheduleInterval,
+      registry: api.registry,
+      heartbeatMs: api.heartbeatMs,
+      pageSize: api.streamPageSize,
+    });
+  }
+  return routeApi(req, url, {
+    db: api.db,
+    now: api.now,
+    idleMinutes: api.idleMinutes,
+    backfillHours: api.backfillHours,
+  });
+}
+
+/**
+ * Builds `handleRequest`, closed over the server's `allowedOrigins` (D14) and
+ * an optional `ApiContext`. `port` is read from `server.port` on each call
+ * rather than captured here, since tests may bind an OS-assigned port
+ * (`startServer(0)`). `api` is omitted by `startServer`'s own tests, which
+ * only exercise the guard/static paths — `/api/*` then falls back to a plain
+ * 404, same as before B5.T2 wired it in `app.ts`.
  */
 export function createRequestHandler(
   allowedOrigins: readonly string[],
+  api?: ApiContext,
 ): (req: Request, server: Server<unknown>) => Promise<Response> {
   return async function handleRequest(req: Request, server: Server<unknown>): Promise<Response> {
     const url = new URL(req.url);
@@ -70,7 +110,8 @@ export function createRequestHandler(
       // app always binds `hostname` + `port` (D14), so it's set in practice.
       const rejection = checkRequest(req.headers, server.port ?? 0, allowedOrigins);
       if (rejection !== null) return rejection;
-      return handleApi();
+      if (api === undefined) return new Response("Not Found", { status: 404 });
+      return handleApi(req, server, url, api);
     }
 
     const staticPath = resolveStaticPath(url.pathname);
