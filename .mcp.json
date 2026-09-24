@@ -1,0 +1,15 @@
+{
+  "$navori": {
+    "managed": true,
+    "version": "0.10.0"
+  },
+  "mcpServers": {
+    "engram": {
+      "command": "engram",
+      "args": [
+        "mcp",
+        "--tools=mem_search,mem_get_observation,mem_context,mem_save,mem_session_summary,mem_update,mem_judge"
+      ]
+    }
+  }
+}

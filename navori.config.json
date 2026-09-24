@@ -1,0 +1,51 @@
+{
+  "$schema": "https://ulisescm.github.io/navori-harness/schema/navori.config.v1.json",
+  "name": "navori-crow",
+  "version": "1.0.0",
+  "engines": [
+    "claude"
+  ],
+  "preset": "custom",
+  "language": "es",
+  "branchBase": "main",
+  "gitignoreHarness": "off",
+  "commits": "conventional-es",
+  "audit": {
+    "mode": "always"
+  },
+  "models": {
+    "orchestrator": "opus",
+    "implementer": "sonnet",
+    "reviewer": "sonnet",
+    "scout": "sonnet",
+    "auditor": "sonnet",
+    "publisher": "haiku",
+    "scribe": "haiku",
+    "architect": "opus"
+  },
+  "effort": {
+    "orchestrator": "xhigh",
+    "implementer": "medium",
+    "reviewer": "medium",
+    "scout": "medium",
+    "auditor": "medium",
+    "publisher": "low",
+    "scribe": "low",
+    "architect": "xhigh"
+  },
+  "plugins": {
+    "engram": {
+      "enabled": true
+    }
+  },
+  "project": {
+    "legacyPaths": [],
+    "criticalAreas": [],
+    "criticalPaths": [],
+    "testsExclude": [],
+    "localSkills": [],
+    "libraries": [],
+    "libraryMigrations": [],
+    "codeLanguage": "unknown"
+  }
+}
