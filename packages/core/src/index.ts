@@ -58,17 +58,24 @@ export {
   getSessionDetail,
   hasEvent,
   ingestBatch,
+  listEventsAfter,
   listProjects,
+  listRecentEvents,
   listSessionEvents,
+  listSessions,
+  localDay,
   stats,
   sweepIdle,
   upsertAgentMeta,
 } from "./store/store";
 export type {
+  EventsAfterFilter,
   IngestBatchDeps,
   IngestBatchInput,
   PendingEvent,
+  RecentEventsFilter,
   SessionEventsPage,
+  SessionsFilter,
   StoredOffset,
 } from "./store/store";
 export { createUlidFactory, ulidTime } from "./ulid";

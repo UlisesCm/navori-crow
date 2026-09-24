@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite";
+import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { basename } from "node:path";
 import type { AgentMetaPatch, JsonValue, LinePos, PartialCrowEvent } from "../adapter";
 import type {
@@ -118,8 +118,13 @@ function compositeSessionId(engine: EngineId, nativeSessionId: string): string {
   return `${engine}:${nativeSessionId}`;
 }
 
-/** Local calendar day (server timezone) of an epoch-ms timestamp — "today" is local, per design's open question 6. */
-function localDay(ts: number): string {
+/**
+ * Local calendar day (server timezone) of an epoch-ms timestamp — "today" is
+ * local, per design's open question 6. Exported for `GET /api/projects`'s
+ * top-level `day` field (B5.T2), which needs the same value this module uses
+ * internally for `project_daily` lookups.
+ */
+export function localDay(ts: number): string {
   const d = new Date(ts);
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
@@ -1054,4 +1059,100 @@ export function listSessionEvents(
   const nextAfter = page.length > 0 ? page[page.length - 1]!.id : after;
 
   return { events, nextAfter, hasMore };
+}
+
+/** Filter for {@link listSessions} (R26): `project`/`status` are `null` when unfiltered; `since` is a plain lower bound (no implicit "or live" widening — that's `listProjects`' job). */
+export interface SessionsFilter {
+  project: string | null;
+  status: SessionStatus | null;
+  since: number;
+  limit: number;
+}
+
+/** `GET /api/sessions?project=&status=&since=&limit=` (R26): sessions matching every given filter, most recent first. */
+export function listSessions(db: Database, filter: SessionsFilter): SessionSummary[] {
+  const clauses = ["last_event_at >= ?"];
+  const params: SQLQueryBindings[] = [filter.since];
+  if (filter.project !== null) {
+    clauses.push("project_key = ?");
+    params.push(filter.project);
+  }
+  if (filter.status !== null) {
+    clauses.push("status = ?");
+    params.push(filter.status);
+  }
+  params.push(filter.limit);
+
+  const rows = db
+    .query<SessionRow, SQLQueryBindings[]>(
+      `SELECT * FROM sessions WHERE ${clauses.join(" AND ")} ORDER BY last_event_at DESC LIMIT ?`,
+    )
+    .all(...params);
+  return rows.map((row) => sessionSummaryFromRow(row, activeAgentFor(db, row.id)));
+}
+
+/** Filter for {@link listRecentEvents}: `project` is `null` when unfiltered. */
+export interface RecentEventsFilter {
+  project: string | null;
+  limit: number;
+}
+
+/** `GET /api/events?project=&limit=` (adición, R31/R33): the most recent events, `(ts desc, id desc)`. */
+export function listRecentEvents(db: Database, filter: RecentEventsFilter): CrowEvent[] {
+  const clauses: string[] = [];
+  const params: SQLQueryBindings[] = [];
+  if (filter.project !== null) {
+    clauses.push("project_key = ?");
+    params.push(filter.project);
+  }
+  const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+  params.push(filter.limit);
+
+  const rows = db
+    .query<{ body_json: string }, SQLQueryBindings[]>(
+      `SELECT body_json FROM events ${where} ORDER BY ts DESC, id DESC LIMIT ?`,
+    )
+    .all(...params);
+  return rows.map((r) => JSON.parse(r.body_json) as CrowEvent);
+}
+
+/** Filter for {@link listEventsAfter} (D13's SSE replay): `after` is the exclusive cursor (`null` = from the start); `projects` empty means unfiltered. */
+export interface EventsAfterFilter {
+  after: string | null;
+  projects: readonly string[];
+  sessionId: string | null;
+  limit: number;
+}
+
+/**
+ * A page of events with `id > after` (or all, if `after` is `null`) matching
+ * the given project/session filters, ordered by `id` ascending — the
+ * paginated replay primitive `sse.ts` uses to catch a reconnecting client up
+ * without gaps or duplicates (D13, R24). Callers already validated `after`
+ * with {@link hasEvent} before calling this.
+ */
+export function listEventsAfter(db: Database, filter: EventsAfterFilter): CrowEvent[] {
+  const clauses: string[] = [];
+  const params: SQLQueryBindings[] = [];
+  if (filter.after !== null) {
+    clauses.push("id > ?");
+    params.push(filter.after);
+  }
+  if (filter.projects.length > 0) {
+    clauses.push(`project_key IN (${filter.projects.map(() => "?").join(",")})`);
+    params.push(...filter.projects);
+  }
+  if (filter.sessionId !== null) {
+    clauses.push("session_id = ?");
+    params.push(filter.sessionId);
+  }
+  const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+  params.push(filter.limit);
+
+  const rows = db
+    .query<{ body_json: string }, SQLQueryBindings[]>(
+      `SELECT body_json FROM events ${where} ORDER BY id ASC LIMIT ?`,
+    )
+    .all(...params);
+  return rows.map((r) => JSON.parse(r.body_json) as CrowEvent);
 }
