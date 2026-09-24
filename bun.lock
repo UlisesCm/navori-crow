@@ -40,11 +40,21 @@
       "name": "@crow/core",
       "version": "0.0.0",
     },
+    "scripts": {
+      "name": "@crow/scripts",
+      "version": "0.0.0",
+      "dependencies": {
+        "@crow/adapter-claude": "workspace:*",
+        "@crow/core": "workspace:*",
+      },
+    },
   },
   "packages": {
     "@crow/adapter-claude": ["@crow/adapter-claude@workspace:packages/adapters/claude"],
 
     "@crow/core": ["@crow/core@workspace:packages/core"],
+
+    "@crow/scripts": ["@crow/scripts@workspace:scripts"],
 
     "@crow/server": ["@crow/server@workspace:apps/server"],
 

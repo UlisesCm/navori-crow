@@ -1,0 +1,14 @@
+{
+  "name": "@crow/scripts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@crow/adapter-claude": "workspace:*",
+    "@crow/core": "workspace:*"
+  }
+}
