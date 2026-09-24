@@ -68,4 +68,35 @@ describe("projectKey", () => {
   test("a symlinked directory resolves to the same key as its target", () => {
     expect(projectKey(symlinkDir).key).toBe(projectKey(subDir).key);
   });
+
+  test("a cwd that doesn't exist never throws and falls back to a literal-path key (D11)", () => {
+    // Covers: R15
+    const deletedDir = join(base, "never-existed");
+    expect(() => projectKey(deletedDir)).not.toThrow();
+    const result = projectKey(deletedDir);
+    expect(result.path).toBe(deletedDir);
+    expect(result.key).toBe(createHash("sha1").update(deletedDir).digest("hex").slice(0, 12));
+  });
+
+  test("a subdirectory of a deleted repo never throws and resolves via the nearest ancestor (D11)", () => {
+    // Covers: R15
+    const deletedRepo = join(base, "deleted-repo");
+    mkdirSync(deletedRepo);
+    git(deletedRepo, "init", "-q", "-b", "main");
+    git(deletedRepo, "config", "user.email", "test@example.com");
+    git(deletedRepo, "config", "user.name", "Test");
+    writeFileSync(join(deletedRepo, "README.md"), "hello\n");
+    git(deletedRepo, "add", "README.md");
+    git(deletedRepo, "commit", "-q", "-m", "init");
+    const missingSub = join(deletedRepo, "gone", "deeper");
+
+    rmSync(deletedRepo, { recursive: true, force: true });
+
+    expect(() => projectKey(missingSub)).not.toThrow();
+    const result = projectKey(missingSub);
+    // No git repo survives at any existing ancestor, so it falls back to the
+    // literal cwd rather than crashing.
+    expect(result.path).toBe(missingSub);
+    expect(result.key).toBe(createHash("sha1").update(missingSub).digest("hex").slice(0, 12));
+  });
 });
