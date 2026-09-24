@@ -6,7 +6,7 @@ metadata:
   maxWords: 650
 ---
 
-<!-- navori:managed id="verify-before-done-base" hash="70b147c4" version="0.10.0" source="@navori/core" fmkeys="name,description,metadata" -->
+<!-- navori:managed id="verify-before-done-base" hash="14c05b36" version="0.10.0" source="@navori/core" fmkeys="name,description,metadata" -->
 # Verify Before Done
 
 ## The Iron Law
@@ -25,7 +25,7 @@ BEFORE claiming "done / ready / approved": IDENTIFY the command that proves it �
 
 | Claim | Required output | Not sufficient |
 |---|---|---|
-| `(quality gate sin configurar — corre 'navori configure quality-gate')` / `(quality gate sin configurar — corre 'navori configure quality-gate')` green | Full command run this turn, exit 0 | "ran it before", "should be green" |
+| `bun run lint && bun run typecheck` / `bun run check` green | Full command run this turn, exit 0 | "ran it before", "should be green" |
 | Zero new errors vs baseline | `git diff --name-only main` — a failure outside that list predates you | "lint said OK", no comparison |
 | UI validated in the browser (only if asked) | Observed state via the repo's browser tool this turn | "looks fine in code" |
 | Bug fixed | Reproduce the original symptom and see it NOT happen | "code changed, assumed fixed" |
@@ -42,7 +42,7 @@ BEFORE claiming "done / ready / approved": IDENTIFY the command that proves it �
 
 ## Red flags (STOP)
 
-- About to write "done"/"ready"/"should work", or `git commit`/`APPROVED` without a fresh `(quality gate sin configurar — corre 'navori configure quality-gate')` run and a full diff read. "Just this once" — NO.
+- About to write "done"/"ready"/"should work", or `git commit`/`APPROVED` without a fresh `bun run lint && bun run typecheck` run and a full diff read. "Just this once" — NO.
 - Trusting a subagent's report without verifying its **load-bearing claims** (cited `file:line`s plus the diff it touched) — scope defined ONCE in `.claude/agents/orchestrator.md` § Anti-broken-telephone, never a full re-read of an already-validated diff.
 
 ## Rationalization prevention
