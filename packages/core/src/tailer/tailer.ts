@@ -427,6 +427,8 @@ export class TailerScheduler {
   private readonly cancelTimers: Array<() => void> = [];
   private readonly scheduleIntervalFn: IntervalScheduler;
   private draining = false;
+  /** The most recently started drain, so `stop()` can await whatever's in flight instead of racing it. */
+  private drainPromise: Promise<void> = Promise.resolve();
 
   constructor(private readonly opts: TailerSchedulerOptions) {
     this.scheduleIntervalFn = opts.scheduleInterval ?? realInterval;
@@ -460,11 +462,15 @@ export class TailerScheduler {
   async runPendingSteps(): Promise<void> {
     if (this.draining) return;
     this.draining = true;
-    try {
-      await this.queue.drain((path) => this.processOne(path));
-    } finally {
-      this.draining = false;
-    }
+    const drain = (async () => {
+      try {
+        await this.queue.drain((path) => this.processOne(path));
+      } finally {
+        this.draining = false;
+      }
+    })();
+    this.drainPromise = drain;
+    await drain;
   }
 
   /** Recomputes the backfill plan (D6, R9) and enqueues it behind whatever's already hot. */
@@ -501,9 +507,20 @@ export class TailerScheduler {
     );
   }
 
-  /** Closes every watcher and cancels every timer. In-flight steps are left to finish on their own. */
-  stop(): void {
+  /**
+   * Closes every watcher and cancels every timer, then awaits whatever
+   * drain is currently in flight (a poll/rescan tick or a hint-triggered
+   * run) before resolving — so a caller that closes the DB right after
+   * `stop()` never races a step still reading/writing it (B5's `startApp`
+   * shutdown order relies on this). A failure in that in-flight step is
+   * swallowed here: it already propagates to whoever called
+   * `start()`/`runPendingSteps()` for it, and `stop()` is a cleanup path —
+   * it must wait for the step to *settle*, not re-throw an unrelated
+   * ingest error into the caller trying to shut down.
+   */
+  async stop(): Promise<void> {
     for (const watcher of this.watchers.splice(0)) watcher.close();
     for (const cancel of this.cancelTimers.splice(0)) cancel();
+    await this.drainPromise.catch(() => {});
   }
 }
