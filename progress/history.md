@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-24 17:33 — orchestrator — F1: lote B5.T2 (API REST y SSE)
+- Cambios: `apps/server/src/api.ts` (`/api/projects`, `/api/sessions`, `/api/sessions/:id`, `/api/sessions/:id/events`, `/api/events`, `/api/stats`; 409 `unknown-cursor`; errores con códigos fijos, sin contenido) y `sse.ts` (`/api/stream` según D13: se suscribe al bus antes del replay, reenvía `id > cursor` paginado, vacía el buffer saltando lo ya enviado y pasa a vivo; `reset` con cursor desconocido; heartbeat de 15 s; desuscripción al desconectarse). Todo se rutea con `isApiPath` detrás del guard. `app.ts` lleva un `StreamRegistry` y `stop()` cierra los streams antes que el servidor y la DB. En el store, lecturas nuevas `listSessions`, `listRecentEvents` y `listEventsAfter`. `tasks.md` marca B5.T2. Cubre R22–R27 y R33.
+- Quality gate: ✅ `bun run check` verde (189 pass / 0 fail), Pass 2 del reviewer.
+- Notas: los dos tests del scheduler que llevaban `// Covers: R6` quedan sin tag, porque ningún requisito cubre el apagado del scheduler. Notas informativas del reviewer: `listRecentEvents` sin filtro recorre toda la tabla de eventos (no hay índice solo por `ts`), y `listEventsAfter` con filtro de proyecto ordena con un b-tree temporal en vez de seguir el índice por `id`; ambas acotadas por `LIMIT` y sin impacto a la escala de F1.
+- Commit / PR: feat/f1-b5t2-api-sse
+
 ## 2026-09-24 16:45 — orchestrator — F1: lote B7.T1 (adaptador Codex)
 - Cambios: paquete nuevo `packages/adapters/codex` (`@crow/adapter-codex`: `adapter.ts`, `map-line.ts`, `index.ts`) según § Mapeo Codex: estado por archivo, línea base de tokens (el primer `token_count` cuenta `last_token_usage`, delta 0 sin evento, retroceso con `usage-anomaly`), historia heredada saltada por `subagent_history_start_ordinal`, `semanticKey` y raíz desde `CODEX_HOME`. Los hilos toman `parentAgentId` de `thread_spawn.parent_thread_id` cuando no es la sesión raíz y `depth` de `thread_spawn.depth`. `tasks.md` marca B7.T1. Cubre R14 y R16.
 - Quality gate: ✅ `bun run check` verde (152 pass / 0 fail), Pass 2 del reviewer.

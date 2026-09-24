@@ -1,9 +1,10 @@
 # Sesión actual
 
-**Estado:** done (PR de B5.T1 a main; B7.T1 se publica aparte)
+**Estado:** en curso (PR de B5.T2 a main; B7.T2 esperando fixtures reales)
 
 ## Resultado
-F1 lote B5.T1 completado: `startApp`, `guard.ts`, `adapters.ts` con Claude y modo dev. Cubre R2 y R28.
+F1 lote B5.T2 completado: API REST y SSE. Cubre R22–R27 y R33.
 
 ## Siguiente paso
-B5.T2: REST (`/api/projects`, `/api/sessions`, `/api/sessions/:id`, `/api/sessions/:id/events`, `/api/events`, `/api/stats`, 409 `unknown-cursor`) y `sse.ts` según D13, ruteando con `isApiPath` de `server.ts`.
+- B7.T2: el usuario corre `scripts/find-codex-fixtures.ts` y el anonimizador sobre `~/.codex/sessions` (los scripts están en el worktree `agent-a636beaeb9dd26bfc`, aprobados sin commit); después, `codex/contract.test.ts` y los casos (a)–(d) sobre fixtures reales.
+- B5.T3: e2e de latencia, reinicio sin duplicados e hidratación.
