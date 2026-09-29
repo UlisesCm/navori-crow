@@ -360,6 +360,21 @@ function mapAttachment(
   return stopFromNotificationText(prompt, spawned, ts, push);
 }
 
+/** Line-level failure: session unknown (core uses the file's), project from the state's last `cwd`. */
+function failure(
+  reason: "invalid-json" | "bad-shape",
+  state: ClaudeState,
+): LineResult<ClaudeState> {
+  return {
+    ok: false,
+    reason,
+    sessionId: null,
+    agentId: null,
+    ...(state.cwd !== null ? { cwd: state.cwd } : {}),
+    state,
+  };
+}
+
 /** `packages/adapters/claude/src/adapter.ts`'s `EngineAdapter.parseLine` — see design.md § Mapeo Claude. */
 export function mapClaudeLine(
   rawLine: string,
@@ -370,10 +385,10 @@ export function mapClaudeLine(
   try {
     parsed = JSON.parse(rawLine);
   } catch {
-    return { ok: false, reason: "invalid-json", sessionId: "unknown", agentId: null, state };
+    return failure("invalid-json", state);
   }
   if (!isRec(parsed) || typeof parsed.type !== "string") {
-    return { ok: false, reason: "bad-shape", sessionId: "unknown", agentId: null, state };
+    return failure("bad-shape", state);
   }
 
   const type = parsed.type;

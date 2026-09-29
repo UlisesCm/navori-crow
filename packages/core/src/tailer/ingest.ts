@@ -98,6 +98,7 @@ function ingestErrorEvent(
   sessionId: string,
   agentId: string | null,
   now: ClockFn,
+  cwd?: string,
 ): PendingEvent["event"] {
   return {
     sessionId,
@@ -105,6 +106,7 @@ function ingestErrorEvent(
     parentAgentId: null,
     kind: "ingest.error",
     ts: now(),
+    ...(cwd !== undefined ? { cwd } : {}),
     error: {
       message: message.slice(0, 1024),
       reason,
@@ -237,9 +239,10 @@ export async function processFile<S extends JsonValue>(
           pos,
           result.reason,
           result.detail ?? result.reason,
-          result.sessionId,
-          result.agentId,
+          result.sessionId ?? match.sessionId ?? "unknown",
+          result.agentId ?? match.agentId,
           now,
+          result.cwd,
         ),
       });
       continue;
@@ -272,6 +275,7 @@ export async function processFile<S extends JsonValue>(
           fallbackSessionId,
           fallbackAgentId,
           now,
+          result.events[0]?.cwd,
         ),
       });
     });

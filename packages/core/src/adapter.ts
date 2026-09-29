@@ -64,8 +64,11 @@ export type LineResult<S extends JsonValue> =
       ok: false;
       reason: IngestErrorReason;
       detail?: string;
-      sessionId: string;
+      /** `null` when the line doesn't reveal its session: core falls back to the file's `match.sessionId`. */
+      sessionId: string | null;
       agentId: string | null;
+      /** Last known `cwd` from the adapter state, so the error resolves to the session's project (R15). */
+      cwd?: string;
       state: S;
     };
 

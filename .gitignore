@@ -12,3 +12,4 @@ apps/server/public/
 .claude/settings.local.json
 .claude/progress/
 .claude/.routing-watch/
+progress/
