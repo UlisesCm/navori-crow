@@ -380,7 +380,7 @@ Cubre R20–R28 y R34.
 
 **Algoritmo (en la transacción, paso 4 y 7 de D4):**
 
-1. Busca el hecho con `SELECT … FROM events WHERE session_id = ? AND lkey = ?` (índice `events_by_lkey`). En `exact` hay como mucho una fila. En `nearest` se descartan las que ya tienen el `role` o caen fuera de ±`windowMs`, y se prefiere el `lfp` igual y después el `|Δts|` menor.
+1. Busca el hecho con `SELECT … FROM events WHERE session_id = ? AND lkey = ?` (índice `events_by_lkey`). En `exact` hay como mucho una fila. En `nearest` se descartan las que ya tienen el `role`, caen fuera de ±`windowMs` o tienen un `lfp` distinto (el fingerprint es **requisito** cuando ambos lados lo traen; si a uno le falta, empareja solo por ventana), y de las restantes se elige el `|Δts|` menor.
 2. **Sin hecho:** se inserta con `lkey`, `lfp` y `lmeta = { lanes: [role], prov: {…} }`; los efectos corren (guardados por `ts`).
 3. **El mismo `role` ya contribuyó** (en modo exact): duplicado del carril; se descarta y cuenta `lane_duplicates`.
 4. **Fusión:** `merged = mergeEvents(stored, prov, incoming, role)`.
