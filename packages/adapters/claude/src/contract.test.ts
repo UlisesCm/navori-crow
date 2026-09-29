@@ -134,7 +134,7 @@ function pick(t: OracleTotals): [number, number, number, number] {
 
 describe("claude contract: real cc-2.1.281 fixture through the real pipeline", () => {
   test("stable summary snapshot + explicit per-row assertions (R11, R12)", async () => {
-    // Covers: R11, R12
+    // Covers: R11, R12, R33
     const db = freshDb();
     const bus = new EventBus();
 
@@ -205,6 +205,23 @@ describe("claude contract: real cc-2.1.281 fixture through the real pipeline", (
     const toolErrors = allEvents.filter((e) => e.kind === "tool.error");
     expect(toolErrors).toHaveLength(4);
     expect(toolErrors.every((e) => e.tool?.ok === false)).toBe(true);
+
+    // D18/R33: the 8 `hook_success` records map to `hook` events (name, phase, ms, exit code) and
+    // nothing of the hook's stdout/stderr/command/content survives; the 4 `hook_additional_context`
+    // records map to nothing.
+    const hooks = allEvents.filter((e) => e.kind === "hook");
+    expect(hooks).toHaveLength(8);
+    for (const e of hooks) {
+      expect(e.hook?.verdict).toBe("success");
+      expect(typeof e.hook?.name).toBe("string");
+      expect(typeof e.hook?.phase).toBe("string");
+      expect(typeof e.hook?.ms).toBe("number");
+      expect(e.hook?.exitCode).toBe(0);
+      expect(e.hook?.blocking).toBe(false);
+      expect(Object.keys(e.hook ?? {}).sort()).toEqual(
+        ["blocking", "exitCode", "ms", "name", "phase", "verdict"].sort(),
+      );
+    }
 
     // --- token totals: independent oracle vs. the store's totals ---
     const detail = getSessionDetail(db, `claude:${SESSION_ID}`);
