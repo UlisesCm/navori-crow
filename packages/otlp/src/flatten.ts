@@ -15,7 +15,8 @@
  * record.
  */
 import { createHash } from "node:crypto";
-import type { FlatOtelRecord, OtelScalar, OtlpSignal } from "./types";
+import type { FlatOtelRecord, OtelScalar } from "@crow/core";
+import type { OtlpSignal } from "./types";
 
 type Rec = Record<string, unknown>;
 

@@ -61,6 +61,9 @@
     "packages/otlp": {
       "name": "@crow/otlp",
       "version": "0.0.0",
+      "dependencies": {
+        "@crow/core": "workspace:*",
+      },
     },
     "scripts": {
       "name": "@crow/scripts",

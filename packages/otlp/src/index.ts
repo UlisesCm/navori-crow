@@ -11,11 +11,5 @@ export {
 export type { DecodeLimits } from "./protobuf";
 export { flattenOtlp } from "./flatten";
 export type { FlattenOptions, FlattenResult } from "./flatten";
-export type {
-  FlatOtelRecord,
-  OtelScalar,
-  OtelSignal,
-  OtlpJson,
-  OtlpJsonValue,
-  OtlpSignal,
-} from "./types";
+export type { FlatOtelRecord, OtelScalar } from "@crow/core";
+export type { OtelSignal, OtlpJson, OtlpJsonValue, OtlpSignal } from "./types";
