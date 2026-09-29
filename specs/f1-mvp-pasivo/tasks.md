@@ -44,7 +44,7 @@ Cada lote es un PR a `main` con `bun run check` en verde. Cada test lleva `// Co
 
 ## B8 · servidor: registro de Codex y e2e multi-motor (depende de B5 y B7)
 
-- [ ] **B8.T1** (R14, R15, R29) — Agregar Codex a `ENGINE_ADAPTERS` en `apps/server/src/adapters.ts`, más un e2e con dos repos de Claude y uno de Codex en la rejilla en vivo (aceptación 1 de F1). · test: `e2e/multi-engine.test.ts`.
+- [x] **B8.T1** (R14, R15, R29) — Agregar Codex a `ENGINE_ADAPTERS` en `apps/server/src/adapters.ts`, más un e2e con dos repos de Claude y uno de Codex en la rejilla en vivo (aceptación 1 de F1). · test: `e2e/multi-engine.test.ts`.
 
 ## Cierre de F1
 
