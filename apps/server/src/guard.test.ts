@@ -1,6 +1,7 @@
 // Covers: R28
 import { describe, expect, test } from "bun:test";
 import { checkRequest } from "./guard";
+import { isIngestPath } from "./ingest-route";
 
 const PORT = 7777;
 
@@ -70,5 +71,27 @@ describe("checkRequest (D14)", () => {
         "http://localhost:5173",
       ]),
     ).toBeNull();
+  });
+});
+
+describe("the guard on /ingest/* (F2a D3, R4)", () => {
+  test("a curl-style hook client (Host only, no Origin, Authorization ignored) passes", () => {
+    // Covers: R4
+    const req = headers({ host: "127.0.0.1:7777", authorization: "Bearer t" });
+    expect(checkRequest(req, PORT, [])).toBeNull();
+  });
+
+  test("a foreign Host or Origin is rejected exactly like /api/*", () => {
+    // Covers: R4
+    expect(checkRequest(headers({ host: "evil.example.com" }), PORT, [])?.status).toBe(403);
+    const foreign = headers({ host: "127.0.0.1:7777", origin: "http://evil.example.com" });
+    expect(checkRequest(foreign, PORT, [])?.status).toBe(403);
+  });
+
+  test("isIngestPath is the case-sensitive /ingest/ prefix (bare /ingest and /INGEST/x are not ingest)", () => {
+    // Covers: R4
+    expect(isIngestPath("/ingest/hook/claude")).toBe(true);
+    expect(isIngestPath("/ingest")).toBe(false);
+    expect(isIngestPath("/INGEST/hook/claude")).toBe(false);
   });
 });

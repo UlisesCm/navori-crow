@@ -16,8 +16,8 @@ Lotes de 1–3 tareas; cada tarea declara los `R<n>` que cubre y sus tests (todo
 
 ## B2 · carril B y hooks de Claude (depende de B1)
 
-- [ ] **B2.T1** (R6, R7) — `IngestQueue` (D2): dos FIFO acotadas y un drenador, cuota por motor, bisección de poison pills y backoff ante `SQLITE_FULL`; `ingest.error` por episodio de desborde. · tests: `ingest-queue.test.ts`.
-- [ ] **B2.T2** (R1, R2, R3, R4, R5, R28) — `POST /ingest/hook/:engine` (D3): 204 inmediato, 404 por motor sin hooks, 401 por token, guard compartido con `/api/*`, 413 por tope de 1 MiB con `Content-Length` o chunked; `LaneMonitor` y `/api/stats.lanes`. · tests: `ingest-route.test.ts`, `guard.test.ts`.
+- [x] **B2.T1** (R6, R7) — `IngestQueue` (D2): dos FIFO acotadas y un drenador, cuota por motor, bisección de poison pills y backoff ante `SQLITE_FULL`; `ingest.error` por episodio de desborde. · tests: `ingest-queue.test.ts`.
+- [x] **B2.T2** (R1, R2, R3, R4, R5, R28) — `POST /ingest/hook/:engine` (D3): 204 inmediato, 404 por motor sin hooks, 401 por token, guard compartido con `/api/*`, 413 por tope de 1 MiB con `Content-Length` o chunked; `LaneMonitor` y `/api/stats.lanes`. · tests: `ingest-route.test.ts`, `guard.test.ts`.
 - [ ] **B2.T3** (R8, R10, R31, R32) — `fromHook` de Claude con los 15 eventos de R8 sobre las capturas de B0 (`Stop`/`StopFailure` → `turn.end`) y el presupuesto de latencia. · tests: `packages/adapters/claude/src/hook.test.ts`, `e2e/hook-latency.test.ts`.
 
 ## B3 · hooks de Codex (depende de B2)

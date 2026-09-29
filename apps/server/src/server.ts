@@ -1,9 +1,11 @@
 import { join, normalize, sep } from "node:path";
 import type { Server } from "bun";
 import type { Database } from "bun:sqlite";
-import type { ClockFn, EventBus, IntervalScheduler } from "@crow/core";
+import type { ClockFn, EventBus, IntervalScheduler, LanesStatus } from "@crow/core";
 import { routeApi } from "./api";
 import { checkRequest } from "./guard";
+import { isIngestPath, routeIngest } from "./ingest-route";
+import type { IngestContext } from "./ingest-route";
 import { createStreamResponse, StreamRegistry } from "./sse";
 
 /** Directory holding the web app's build output (see apps/web/vite.config.ts). */
@@ -56,6 +58,8 @@ export interface ApiContext {
   backfillHours: number;
   scheduleInterval: IntervalScheduler;
   registry: StreamRegistry;
+  /** `/api/stats.lanes` source (F2a D15); omitted in tests that don't wire the lanes. */
+  lanes?: () => LanesStatus;
   heartbeatMs?: number;
   streamPageSize?: number;
 }
@@ -80,8 +84,12 @@ function handleApi(req: Request, server: Server<unknown>, url: URL, api: ApiCont
     now: api.now,
     idleMinutes: api.idleMinutes,
     backfillHours: api.backfillHours,
+    lanes: api.lanes,
   });
 }
+
+/** Explicit `Bun.serve` body cap: backstop above the route's own 1 MiB hook limit (D3). */
+export const MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
 
 /**
  * Builds `handleRequest`, closed over the server's `allowedOrigins` (D14) and
@@ -94,6 +102,7 @@ function handleApi(req: Request, server: Server<unknown>, url: URL, api: ApiCont
 export function createRequestHandler(
   allowedOrigins: readonly string[],
   api?: ApiContext,
+  ingest?: IngestContext,
 ): (req: Request, server: Server<unknown>) => Promise<Response> {
   return async function handleRequest(req: Request, server: Server<unknown>): Promise<Response> {
     const url = new URL(req.url);
@@ -112,6 +121,13 @@ export function createRequestHandler(
       if (rejection !== null) return rejection;
       if (api === undefined) return new Response("Not Found", { status: 404 });
       return handleApi(req, server, url, api);
+    }
+
+    if (isIngestPath(url.pathname)) {
+      const rejection = checkRequest(req.headers, server.port ?? 0, allowedOrigins);
+      if (rejection !== null) return rejection;
+      if (ingest === undefined) return new Response("Not Found", { status: 404 });
+      return routeIngest(req, url, ingest);
     }
 
     const staticPath = resolveStaticPath(url.pathname);
@@ -134,6 +150,7 @@ export function startServer(
   return Bun.serve({
     hostname: "127.0.0.1",
     port,
+    maxRequestBodySize: MAX_REQUEST_BODY_BYTES,
     fetch: createRequestHandler(allowedOrigins),
   });
 }

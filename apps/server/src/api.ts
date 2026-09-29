@@ -24,6 +24,7 @@ import type {
   ApiErrorResponse,
   ClockFn,
   EventsResponse,
+  LanesStatus,
   ProjectsResponse,
   SessionDetailResponse,
   SessionEventsResponse,
@@ -38,6 +39,8 @@ export interface RestContext {
   now: ClockFn;
   idleMinutes: number;
   backfillHours: number;
+  /** Lane counters for `/api/stats` (F2a D15); absent = an empty status. */
+  lanes?: () => LanesStatus;
 }
 
 const DEFAULT_LIMIT = 100;
@@ -189,7 +192,10 @@ function handleEvents(url: URL, ctx: RestContext): Response {
 
 /** `GET /api/stats` (observability over R10, R13, R16). */
 function handleStats(ctx: RestContext): Response {
-  const body: StatsResponse = { ingest: stats(ctx.db) };
+  const body: StatsResponse = {
+    ingest: stats(ctx.db),
+    lanes: ctx.lanes?.() ?? { since: ctx.now(), engines: {} },
+  };
   return Response.json(body);
 }
 
