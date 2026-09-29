@@ -2,6 +2,7 @@
   import { SessionStore } from "../lib/state/session.svelte";
   import AgentTree from "./AgentTree.svelte";
   import CostPanel from "./CostPanel.svelte";
+  import HooksPanel from "./HooksPanel.svelte";
   import Timeline from "./Timeline.svelte";
 
   const { id }: { id: string } = $props();
@@ -36,6 +37,7 @@
     />
     <aside>
       <CostPanel session={store.session} />
+      <HooksPanel hooks={store.hooks} hooksFrom={store.hooksFrom} />
       <AgentTree nodes={store.tree} />
     </aside>
   </div>

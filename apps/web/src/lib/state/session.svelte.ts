@@ -9,6 +9,12 @@ import {
   type FeedState,
 } from "../reduce/feed";
 import {
+  applyManyToHooks,
+  applyToHooks,
+  hooksFromSnapshot,
+  type HooksState,
+} from "../reduce/hooks";
+import {
   applyManyToSession,
   applyToSession,
   buildSessionTree,
@@ -27,6 +33,7 @@ const PAGE_SIZE = 500;
 export class SessionStore {
   private feed: FeedState | null = $state(null);
   private detail: SessionState | null = $state(null);
+  private hooksState: HooksState | null = $state(null);
   error: string | null = $state(null);
   connected = $state(false);
   loadingOlder = $state(false);
@@ -39,6 +46,8 @@ export class SessionStore {
   readonly loaded = $derived(this.feed !== null && this.detail !== null);
   readonly events: CrowEvent[] = $derived(this.feed?.value.events ?? []);
   readonly hasOlder = $derived(this.feed?.value.truncated ?? false);
+  readonly hooks = $derived(this.hooksState?.value.hooks ?? []);
+  readonly hooksFrom = $derived(this.hooksState?.value.hooksFrom ?? null);
   readonly session = $derived(this.detail?.value.session ?? null);
   readonly tree: AgentTreeNode[] = $derived(
     this.detail === null
@@ -60,6 +69,7 @@ export class SessionStore {
       const detail = applyManyToSession(sessionFromSnapshot(snapshot), page.events); // only ids > snapshot.cursor count
       this.feed = feed;
       this.detail = detail;
+      this.hooksState = applyManyToHooks(hooksFromSnapshot(snapshot), page.events);
       this.error = null;
       this.handle = openStream({
         session: id,
@@ -67,6 +77,7 @@ export class SessionStore {
         onEvent: (e) => {
           if (this.feed !== null) this.feed = applyToFeed(this.feed, e);
           if (this.detail !== null) this.detail = applyToSession(this.detail, e);
+          if (this.hooksState !== null) this.hooksState = applyToHooks(this.hooksState, e);
         },
         onReset: () => void this.start(id),
         onDead: () => this.restarter.schedule(),

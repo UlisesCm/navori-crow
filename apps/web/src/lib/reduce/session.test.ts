@@ -74,6 +74,8 @@ function snapshot(cursor: string, agents: AgentNode[] = []): SessionDetailRespon
       totals: { ...emptyTotals(), input: 100, costUsd: 1 },
     },
     agents,
+    hooks: [],
+    hooksFrom: null,
   };
 }
 

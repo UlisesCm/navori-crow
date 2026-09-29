@@ -18,6 +18,7 @@ import {
   listSessionEventsBefore,
   listSessions,
   localDay,
+  sessionHookStats,
   stats,
 } from "@crow/core";
 import type {
@@ -139,6 +140,7 @@ function handleSessionDetail(sessionId: string, ctx: RestContext): Response {
     idleMs: ctx.idleMinutes * 60_000,
     session: detail.session,
     agents: detail.agents,
+    ...sessionHookStats(ctx.db, sessionId),
   };
   return Response.json(body);
 }
