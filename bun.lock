@@ -30,6 +30,14 @@
         "vite": "^8.3.0",
       },
     },
+    "e2e": {
+      "name": "@crow/e2e",
+      "version": "0.0.0",
+      "dependencies": {
+        "@crow/core": "workspace:*",
+        "@crow/server": "workspace:*",
+      },
+    },
     "packages/adapters/claude": {
       "name": "@crow/adapter-claude",
       "version": "0.0.0",
@@ -63,6 +71,8 @@
     "@crow/adapter-codex": ["@crow/adapter-codex@workspace:packages/adapters/codex"],
 
     "@crow/core": ["@crow/core@workspace:packages/core"],
+
+    "@crow/e2e": ["@crow/e2e@workspace:e2e"],
 
     "@crow/scripts": ["@crow/scripts@workspace:scripts"],
 
