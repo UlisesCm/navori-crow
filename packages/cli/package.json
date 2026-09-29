@@ -12,6 +12,8 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@crow/adapter-claude": "workspace:*",
+    "@crow/adapter-codex": "workspace:*",
     "@crow/core": "workspace:*",
     "@crow/server": "workspace:*"
   }
