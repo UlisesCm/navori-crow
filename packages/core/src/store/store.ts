@@ -1,6 +1,6 @@
 import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { basename } from "node:path";
-import type { AgentMetaPatch, JsonValue, LinePos, PartialCrowEvent } from "../adapter";
+import type { AgentMetaPatch, JsonValue, LinePos, MatchSpec, PartialCrowEvent } from "../adapter";
 import type {
   AgentNode,
   ProjectSummary,
@@ -18,6 +18,14 @@ import type {
   IngestErrorReason,
 } from "../crow-event";
 import { costUsd as computeCostUsd } from "../pricing";
+import {
+  createFact,
+  matchViolation,
+  mergeContribution,
+  type FactIdentity,
+  type FactMeta,
+  type FactState,
+} from "./reconcile";
 import { projectKey as resolveProjectKey } from "../project-key";
 import { localDay } from "../time";
 import type { ClockFn } from "../ulid";
@@ -73,6 +81,7 @@ interface SessionRow extends TotalsRow {
   status: SessionStatus;
   model: string | null;
   last_prompt: string | null;
+  last_prompt_at: number | null;
 }
 
 interface AgentRow extends TotalsRow {
@@ -179,14 +188,21 @@ function usageDelta(stored: UsageComponents, next: UsageComponents): UsageCompon
   };
 }
 
+/**
+ * Session status after an event (D10), with the BD1 guard: an `ended` session only revives with
+ * `ts > ended_at`, so a late old event (backlogged transcript, fusion, `turn.end`) cannot undo a
+ * `SessionEnd`.
+ */
 function nextStatus(
   current: SessionStatus,
   kind: EventKind,
   ts: number,
   now: number,
   idleMs: number,
+  endedAt: number | null,
 ): SessionStatus {
   if (kind === "session.end") return "ended";
+  if (current === "ended" && endedAt !== null && ts <= endedAt) return "ended";
   if (ts >= now - idleMs) return "live"; // even from `ended` — resumption (D10)
   return current === "ended" ? "ended" : "idle";
 }
@@ -490,54 +506,73 @@ function stampEvent(
   seq: number,
   partial: PartialCrowEvent,
 ): CrowEvent {
-  const { usageKey: _usageKey, semanticKey: _semanticKey, ...rest } = partial;
+  const {
+    usageKey: _usageKey,
+    semanticKey: _semanticKey,
+    match: _match,
+    usageCallKey: _usageCallKey,
+    otelUsage: _otelUsage,
+    ...rest
+  } = partial;
   return { ...rest, id, engine, source, projectKey, projectPath, seq };
 }
 
-/**
- * Inserts one event row and applies its side effects: session status/
- * `last_event_at`/`last_prompt` (skipped for `ingest.error`, D10), and the
- * project's `last_error_json` for `tool.error`/`ingest.error`.
- */
-function persistEvent(
-  db: Database,
-  deps: IngestBatchDeps,
-  engine: EngineId,
-  source: EventSource,
-  sessionId: string,
-  agentRowKey: string,
-  projectKey: string,
-  seq: number,
-  partial: PartialCrowEvent,
-): CrowEvent {
-  const projectPath = projectPathFor(db, projectKey);
-  const id = deps.nextId();
-  const full = stampEvent(id, engine, source, projectKey, projectPath, seq, partial);
+/** Extra columns a reconciled fact carries (`events.lkey`/`lfp`/`lmeta`, D5). */
+interface FactColumns {
+  lkey: string;
+  lfp: string | null;
+  lmeta: FactMeta;
+}
 
+function insertEventRow(db: Database, full: CrowEvent, columns: FactColumns | null): void {
   db.query(
-    `INSERT INTO events (id, session_id, project_key, agent_id, kind, ts, source, call_id, body_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO events (id, session_id, project_key, agent_id, kind, ts, source, call_id, body_json, lkey, lfp, lmeta)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
-    id,
-    sessionId,
-    projectKey,
+    full.id,
+    compositeSessionId(full.engine, full.sessionId),
+    full.projectKey,
     full.agentId,
     full.kind,
     full.ts,
     full.source,
     full.tool?.callId ?? null,
     JSON.stringify(full),
+    columns?.lkey ?? null,
+    columns?.lfp ?? null,
+    columns !== null ? JSON.stringify(columns.lmeta) : null,
   );
+}
 
+/**
+ * The state effects of an event (or of a fused fact), all guarded by `ts` so that repeating them or
+ * applying them out of order cannot regress state (BD1): session status and `last_event_at`,
+ * `ended_at`, `last_prompt`, the agent's `last_event_at`, and the project's `last_error_json`.
+ */
+function applyStateEffects(
+  db: Database,
+  deps: IngestBatchDeps,
+  full: CrowEvent,
+  sessionId: string,
+  agentRowKey: string,
+  projectKey: string,
+): void {
   if (full.kind !== "ingest.error") {
     const now = deps.now();
     const current = db
-      .query<{ status: SessionStatus; last_event_at: number }, [string]>(
-        "SELECT status, last_event_at FROM sessions WHERE id = ?",
+      .query<{ status: SessionStatus; last_event_at: number; ended_at: number | null }, [string]>(
+        "SELECT status, last_event_at, ended_at FROM sessions WHERE id = ?",
       )
       .get(sessionId);
     if (current !== null) {
-      const status = nextStatus(current.status, full.kind, full.ts, now, deps.idleMs);
+      const status = nextStatus(
+        current.status,
+        full.kind,
+        full.ts,
+        now,
+        deps.idleMs,
+        current.ended_at,
+      );
       const lastEventAt = Math.max(current.last_event_at, full.ts);
       db.query("UPDATE sessions SET status = ?, last_event_at = ? WHERE id = ?").run(
         status,
@@ -546,16 +581,17 @@ function persistEvent(
       );
     }
     if (full.kind === "session.end") {
-      db.query("UPDATE sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL").run(
+      db.query("UPDATE sessions SET ended_at = MAX(COALESCE(ended_at, ?), ?) WHERE id = ?").run(
+        full.ts,
         full.ts,
         sessionId,
       );
     }
     if (full.kind === "prompt" && full.text !== undefined) {
-      db.query("UPDATE sessions SET last_prompt = ? WHERE id = ?").run(
-        full.text.slice(0, 8192),
-        sessionId,
-      );
+      db.query(
+        `UPDATE sessions SET last_prompt = ?, last_prompt_at = ?
+         WHERE id = ? AND (last_prompt_at IS NULL OR last_prompt_at <= ?)`,
+      ).run(full.text.slice(0, 8192), full.ts, sessionId, full.ts);
     }
     db.query(
       "UPDATE agents SET last_event_at = MAX(COALESCE(last_event_at, 0), ?) WHERE id = ?",
@@ -576,7 +612,28 @@ function persistEvent(
   if (full.kind === "ingest.error" && full.error?.reason) {
     incrementStat(db, `errors:${full.error.reason}`);
   }
+}
 
+/**
+ * Inserts one event row and applies its side effects (see {@link applyStateEffects}); skipped for
+ * `ingest.error` where D10 says an error alone never touches the session.
+ */
+function persistEvent(
+  db: Database,
+  deps: IngestBatchDeps,
+  engine: EngineId,
+  source: EventSource,
+  sessionId: string,
+  agentRowKey: string,
+  projectKey: string,
+  seq: number,
+  partial: PartialCrowEvent,
+): CrowEvent {
+  const projectPath = projectPathFor(db, projectKey);
+  const id = deps.nextId();
+  const full = stampEvent(id, engine, source, projectKey, projectPath, seq, partial);
+  insertEventRow(db, full, null);
+  applyStateEffects(db, deps, full, sessionId, agentRowKey, projectKey);
   return full;
 }
 
@@ -620,12 +677,387 @@ export interface IngestBatchDeps {
   idleMs: number;
 }
 
+/** A stored fact found by its `match` key, with its provenance. */
+interface FoundFact {
+  state: FactState;
+  lfp: string | null;
+}
+
+/** What {@link ingestInTx} does with a matched event: create the fact, or fuse into `found`. */
+interface MatchPlan {
+  found: FoundFact | null;
+  next: FactState;
+  visibleChanged: boolean;
+}
+
+function parseFact(row: {
+  body_json: string;
+  lmeta: string | null;
+  lfp: string | null;
+}): FoundFact {
+  const meta: FactMeta =
+    row.lmeta === null ? { lanes: [], prov: {} } : (JSON.parse(row.lmeta) as FactMeta);
+  return { state: { fact: JSON.parse(row.body_json) as CrowEvent, meta }, lfp: row.lfp };
+}
+
+/**
+ * D5 step 1: the fact this contribution belongs to, or `null`. `exact` keys resolve to at most one
+ * row; `nearest` keys take the candidates that don't have the role yet and sit within the window,
+ * preferring the same fingerprint and then the smallest `|Δts|` (id as the last tie-break).
+ */
+function findFact(
+  db: Database,
+  sessionId: string,
+  match: MatchSpec,
+  role: string,
+  ts: number,
+): FoundFact | null {
+  const rows = db
+    .query<
+      { id: string; ts: number; body_json: string; lmeta: string | null; lfp: string | null },
+      [string, string]
+    >(
+      "SELECT id, ts, body_json, lmeta, lfp FROM events WHERE session_id = ? AND lkey = ? ORDER BY id ASC",
+    )
+    .all(sessionId, match.key);
+  if (match.mode === "exact") {
+    const first = rows[0];
+    return first === undefined ? null : parseFact(first);
+  }
+  const window = match.windowMs ?? 0;
+  const candidates = rows
+    .map((row) => ({ row, found: parseFact(row) }))
+    .filter(
+      ({ row, found }) =>
+        !found.state.meta.lanes.includes(role) &&
+        Math.abs(row.ts - ts) <= window &&
+        // Two distinct prompts must never fuse: the fingerprint is required when BOTH sides carry one.
+        (found.lfp === null || match.fingerprint === undefined || found.lfp === match.fingerprint),
+    );
+  candidates.sort((a, b) => {
+    const fpA = a.found.lfp === (match.fingerprint ?? null) ? 0 : 1;
+    const fpB = b.found.lfp === (match.fingerprint ?? null) ? 0 : 1;
+    if (fpA !== fpB) return fpA - fpB;
+    const dA = Math.abs(a.row.ts - ts);
+    const dB = Math.abs(b.row.ts - ts);
+    if (dA !== dB) return dA - dB;
+    return a.row.id < b.row.id ? -1 : 1;
+  });
+  return candidates[0]?.found ?? null;
+}
+
+/** `true` if the session already has an `agents` row or an `agent.start` fact for this agent (D4 step 5). */
+function agentKnown(db: Database, sessionId: string, agentId: string): boolean {
+  if (db.query("SELECT 1 FROM agents WHERE id = ?").get(agentRowId(sessionId, agentId)) !== null) {
+    return true;
+  }
+  return (
+    db
+      .query(
+        "SELECT 1 FROM events WHERE session_id = ? AND kind = 'agent.start' AND agent_id = ? LIMIT 1",
+      )
+      .get(sessionId, agentId) !== null
+  );
+}
+
+/** The event/fact fields the agent-level effects read (a `PartialCrowEvent` or a fused `CrowEvent`). */
+type AgentSubject = Pick<CrowEvent, "kind" | "agentId" | "parentAgentId" | "agent" | "tool">;
+
+/**
+ * Agent-level effects. `agent.start` only fills metadata (`COALESCE`) and never touches `ended_at`;
+ * `agent.stop` keeps the first `ended_at` — a finished agent never revives (BD1).
+ */
+function applyAgentEffects(
+  db: Database,
+  sessionId: string,
+  agentRowKey: string,
+  ts: number,
+  subject: AgentSubject,
+): void {
+  if (subject.kind === "agent.start" && subject.agent) {
+    db.query(
+      `UPDATE agents SET type = COALESCE(?, type), description = COALESCE(?, description),
+         spawn_call_id = COALESCE(?, spawn_call_id), depth = COALESCE(?, depth) WHERE id = ?`,
+    ).run(
+      subject.agent.type ?? null,
+      subject.agent.description ?? null,
+      subject.agent.spawnCallId ?? null,
+      subject.agent.depth ?? null,
+      agentRowKey,
+    );
+    // depth > 1: the adapter never knows its native parent, only the call id that spawned
+    // it — resolve it now if that tool.pre already landed (D3/ingestBatch step 5).
+    if ((subject.agent.depth ?? 0) > 1 && subject.agent.spawnCallId !== undefined) {
+      const parentRowKey = resolveDepthParent(db, sessionId, subject.agent.spawnCallId);
+      if (parentRowKey !== null) {
+        db.query("UPDATE agents SET parent_id = ? WHERE id = ?").run(parentRowKey, agentRowKey);
+      }
+    }
+  }
+  if (subject.kind === "agent.stop") {
+    db.query("UPDATE agents SET ended_at = COALESCE(ended_at, ?) WHERE id = ?").run(
+      ts,
+      agentRowKey,
+    );
+  }
+  if (subject.kind === "tool.pre" && subject.tool?.callId !== undefined) {
+    // Symmetric case: some depth > 1 agent may already be waiting on this exact call id
+    // (child ingested before its parent's tool.pre — the other processing order).
+    resolvePendingChildren(db, sessionId, agentRowKey, subject.tool.callId);
+  }
+}
+
+/** The `ingest.error` a store-detected problem with `event` becomes (never thrown, MF7). */
+function storeErrorEvent(
+  event: PartialCrowEvent,
+  pos: LinePos,
+  reason: IngestErrorReason,
+  message: string,
+): PartialCrowEvent {
+  return {
+    sessionId: event.sessionId,
+    agentId: event.agentId,
+    parentAgentId: event.parentAgentId,
+    kind: "ingest.error",
+    ts: event.ts,
+    cwd: event.cwd,
+    error: { message, reason, path: pos.path, offset: pos.offset, line: pos.line },
+  };
+}
+
+/**
+ * The shared body of {@link ingestBatch} and {@link ingestEvents}; must run inside a transaction.
+ * Per event (D4): lane dedupe → session → `reconcile` (find the fact) → canonical agent → usage →
+ * insert or fuse (D5) → `ts`-guarded effects.
+ */
+function ingestInTx(
+  db: Database,
+  deps: IngestBatchDeps,
+  events: readonly PendingEvent[],
+): CrowEvent[] {
+  const stored: CrowEvent[] = [];
+
+  for (const pending of events) {
+    const { event, engine, source, lineHash, part, pos } = pending;
+    const lineKey = `l:${lineHash}:${part}`;
+    if (!insertDedupe(db, source, event.sessionId, lineKey, null)) continue; // R16
+
+    if (event.semanticKey !== undefined) {
+      const semanticKey = `s:${event.agentId ?? "main"}:${event.semanticKey}`;
+      if (!insertDedupe(db, source, event.sessionId, semanticKey, null)) {
+        incrementStat(db, "semantic_duplicates"); // D7
+        continue;
+      }
+    }
+
+    const { id: sessionId, projectKey } = ensureSession(
+      db,
+      engine,
+      event.sessionId,
+      event.cwd,
+      event.ts,
+      event.kind !== "ingest.error", // D10: an error alone never makes a new session `live`
+    );
+
+    // D4 step 4 / D5: resolve the logical fact BEFORE any agent row exists (MF3).
+    let plan: MatchPlan | null = null;
+    if (event.match !== undefined) {
+      const violation = matchViolation(event);
+      if (violation !== null) {
+        stored.push(
+          persistEvent(
+            db,
+            deps,
+            engine,
+            source,
+            sessionId,
+            agentRowId(sessionId, event.agentId),
+            projectKey,
+            pos.offset,
+            storeErrorEvent(event, pos, "invariant", `invariant: ${violation}`),
+          ),
+        );
+        continue;
+      }
+      const role = event.match.role ?? source;
+      const found = findFact(db, sessionId, event.match, role, event.ts);
+      if (found !== null && event.match.mode === "exact" && found.state.meta.lanes.includes(role)) {
+        incrementStat(db, "lane_duplicates"); // same lane, same fact: a duplicate, not a fusion
+        continue;
+      }
+      const identity: FactIdentity = {
+        id: found?.state.fact.id ?? deps.nextId(),
+        engine,
+        projectKey,
+        projectPath: projectPathFor(db, projectKey),
+        sessionId: event.sessionId,
+      };
+      const incoming = { ...event, seq: pos.offset };
+      if (found === null) {
+        plan = { found, next: createFact(identity, incoming, role, source), visibleChanged: false };
+      } else {
+        const merged = mergeContribution(identity, found.state, incoming, role, source);
+        plan = { found, ...merged };
+      }
+    }
+
+    const subject: AgentSubject = plan?.next.fact ?? event;
+    // D4 step 5: a hook `agent.stop` for an agent nobody else has seen is stored as an event but
+    // never creates the agent row (#560: internal subagents without a transcript).
+    const phantom =
+      source === "hook" &&
+      subject.kind === "agent.stop" &&
+      subject.agentId !== null &&
+      !agentKnown(db, sessionId, subject.agentId);
+    const agentRowKey = phantom
+      ? agentRowId(sessionId, subject.agentId)
+      : ensureAgent(db, sessionId, subject.agentId, subject.parentAgentId, event.ts);
+    applyAgentEffects(db, sessionId, agentRowKey, plan?.next.fact.ts ?? event.ts, subject);
+
+    let usageForStorage: CrowEventUsage | undefined = event.usage;
+    if (event.usage !== undefined) {
+      const usage = event.usage;
+      if (event.usageKey !== undefined) {
+        const next = usageComponents(usage);
+        if (insertUsageDedupe(db, source, event.sessionId, event.usageKey, next)) {
+          // First line ever seen for this key: the whole usage is the delta (baseline was zero).
+          usageForStorage = applyUsage(db, sessionId, agentRowKey, projectKey, usage, event.ts);
+        } else {
+          const storedMax = readUsageDedupe(db, source, event.sessionId, event.usageKey);
+          const delta = usageDelta(storedMax, next);
+          if (delta === null) {
+            // A component went backwards vs. the tracked max: don't trust this line at all, not
+            // even its growing components (D7/R13, round 4) — keep the stored max as-is.
+            usageForStorage = undefined;
+            incrementStat(db, "usage_anomalies");
+            const anomaly = persistEvent(
+              db,
+              deps,
+              engine,
+              source,
+              sessionId,
+              agentRowKey,
+              projectKey,
+              pos.offset,
+              storeErrorEvent(
+                event,
+                pos,
+                "usage-anomaly",
+                `usage-anomaly: ${event.usageKey} had a component below the tracked max`,
+              ),
+            );
+            stored.push(anomaly);
+          } else if (isZeroUsageDelta(delta)) {
+            // Every component matches the tracked max exactly: nothing new to count, silently.
+            usageForStorage = undefined;
+          } else {
+            // Every component is ≥ the tracked max, and at least one grew: count only the
+            // positive delta, and advance the tracked max to this line's values.
+            updateUsageDedupeMax(db, source, event.sessionId, event.usageKey, next);
+            const deltaUsage: CrowEventUsage = { ...delta, model: usage.model };
+            usageForStorage = applyUsage(
+              db,
+              sessionId,
+              agentRowKey,
+              projectKey,
+              deltaUsage,
+              event.ts,
+            );
+          }
+        }
+      } else {
+        usageForStorage = applyUsage(db, sessionId, agentRowKey, projectKey, usage, event.ts);
+      }
+    }
+
+    // A usage-only continuation line (no text, e.g. a streamed `tool_use`-only assistant chunk,
+    // round 4 `map-line.ts` change) whose usage ended up counting nothing this line — either a
+    // zero delta or a rejected anomaly — would otherwise persist as a content-free
+    // `assistant.message` row and fill the timeline with noise. Skip it: the line was still
+    // dedupe-marked above (R16), and, for the anomaly case, the `ingest.error` above already
+    // recorded it — there's nothing else this row would carry.
+    if (
+      event.kind === "assistant.message" &&
+      event.text === undefined &&
+      usageForStorage === undefined
+    ) {
+      continue;
+    }
+
+    if (plan === null || event.match === undefined) {
+      const eventToStore: PartialCrowEvent = { ...event, usage: usageForStorage };
+      stored.push(
+        persistEvent(
+          db,
+          deps,
+          engine,
+          source,
+          sessionId,
+          agentRowKey,
+          projectKey,
+          pos.offset,
+          eventToStore,
+        ),
+      );
+      continue;
+    }
+
+    // D5 steps 2 and 4: insert the fact, or fuse in place (the `id` never changes) and, only if a
+    // painted field changed, publish a `revision` row with a new monotonic id.
+    const fact = plan.next.fact;
+    if (plan.found === null) {
+      insertEventRow(db, fact, {
+        lkey: event.match.key,
+        lfp: event.match.fingerprint ?? null,
+        lmeta: plan.next.meta,
+      });
+      applyStateEffects(db, deps, fact, sessionId, agentRowKey, projectKey);
+      stored.push(fact);
+      continue;
+    }
+    db.query(
+      `UPDATE events SET kind = ?, ts = ?, agent_id = ?, source = ?, call_id = ?, body_json = ?, lmeta = ?
+       WHERE id = ?`,
+    ).run(
+      fact.kind,
+      fact.ts,
+      fact.agentId,
+      fact.source,
+      fact.tool?.callId ?? null,
+      JSON.stringify(fact),
+      JSON.stringify(plan.next.meta),
+      fact.id,
+    );
+    applyStateEffects(db, deps, fact, sessionId, agentRowKey, projectKey);
+    if (plan.visibleChanged) {
+      const revision: CrowEvent = {
+        id: deps.nextId(),
+        engine,
+        source: fact.source,
+        projectKey,
+        projectPath: fact.projectPath,
+        sessionId: fact.sessionId,
+        agentId: fact.agentId,
+        parentAgentId: fact.parentAgentId,
+        kind: "revision",
+        ts: fact.ts,
+        revision: { of: fact.id, fact },
+      };
+      insertEventRow(db, revision, null);
+      stored.push(revision);
+    }
+  }
+
+  return stored;
+}
+
 /**
  * Stores a batch of parsed events in a single transaction (design.md §
  * Esquema v1, "ingestBatch"): content + semantic dedupe (D7), sticky project
- * assignment (D8), usage dedupe with the `usage-anomaly` guard (R13, D7),
- * incremental session/agent/day totals (R4), session status (D10) and the
- * file's offset — then returns the events actually stored, in commit order.
+ * assignment (D8), cross-lane reconciliation (F2a D5), usage dedupe with the
+ * `usage-anomaly` guard (R13, D7), incremental session/agent/day totals (R4),
+ * session status (D10) and the file's offset — then returns the events
+ * actually stored (facts and `revision` rows), in commit order.
  *
  * Callers (the tailer, B3) must publish the returned events to the
  * {@link import("../bus").EventBus} only after this call returns (R22): the
@@ -636,153 +1068,10 @@ export function ingestBatch(
   deps: IngestBatchDeps,
   input: IngestBatchInput,
 ): CrowEvent[] {
-  const stored: CrowEvent[] = [];
+  let stored: CrowEvent[] = [];
 
   const run = db.transaction(() => {
-    for (const pending of input.events) {
-      const { event, engine, source, lineHash, part, pos } = pending;
-      const lineKey = `l:${lineHash}:${part}`;
-      if (!insertDedupe(db, source, event.sessionId, lineKey, null)) continue; // R16
-
-      if (event.semanticKey !== undefined) {
-        const semanticKey = `s:${event.agentId ?? "main"}:${event.semanticKey}`;
-        if (!insertDedupe(db, source, event.sessionId, semanticKey, null)) {
-          incrementStat(db, "semantic_duplicates"); // D7
-          continue;
-        }
-      }
-
-      const { id: sessionId, projectKey } = ensureSession(
-        db,
-        engine,
-        event.sessionId,
-        event.cwd,
-        event.ts,
-        event.kind !== "ingest.error", // D10: an error alone never makes a new session `live`
-      );
-      const agentRowKey = ensureAgent(db, sessionId, event.agentId, event.parentAgentId, event.ts);
-
-      if (event.kind === "agent.start" && event.agent) {
-        db.query(
-          "UPDATE agents SET type = ?, description = ?, spawn_call_id = ?, depth = ? WHERE id = ?",
-        ).run(
-          event.agent.type ?? null,
-          event.agent.description ?? null,
-          event.agent.spawnCallId ?? null,
-          event.agent.depth ?? null,
-          agentRowKey,
-        );
-        // depth > 1: the adapter never knows its native parent, only the call id that spawned
-        // it — resolve it now if that tool.pre already landed (D3/ingestBatch step 5).
-        if ((event.agent.depth ?? 0) > 1 && event.agent.spawnCallId !== undefined) {
-          const parentRowKey = resolveDepthParent(db, sessionId, event.agent.spawnCallId);
-          if (parentRowKey !== null) {
-            db.query("UPDATE agents SET parent_id = ? WHERE id = ?").run(parentRowKey, agentRowKey);
-          }
-        }
-      }
-      if (event.kind === "agent.stop") {
-        db.query("UPDATE agents SET ended_at = ? WHERE id = ?").run(event.ts, agentRowKey);
-      }
-      if (event.kind === "tool.pre" && event.tool?.callId !== undefined) {
-        // Symmetric case: some depth > 1 agent may already be waiting on this exact call id
-        // (child ingested before its parent's tool.pre — the other processing order).
-        resolvePendingChildren(db, sessionId, agentRowKey, event.tool.callId);
-      }
-
-      let usageForStorage: CrowEventUsage | undefined = event.usage;
-      if (event.usage !== undefined) {
-        const usage = event.usage;
-        if (event.usageKey !== undefined) {
-          const next = usageComponents(usage);
-          if (insertUsageDedupe(db, source, event.sessionId, event.usageKey, next)) {
-            // First line ever seen for this key: the whole usage is the delta (baseline was zero).
-            usageForStorage = applyUsage(db, sessionId, agentRowKey, projectKey, usage, event.ts);
-          } else {
-            const storedMax = readUsageDedupe(db, source, event.sessionId, event.usageKey);
-            const delta = usageDelta(storedMax, next);
-            if (delta === null) {
-              // A component went backwards vs. the tracked max: don't trust this line at all, not
-              // even its growing components (D7/R13, round 4) — keep the stored max as-is.
-              usageForStorage = undefined;
-              incrementStat(db, "usage_anomalies");
-              const anomaly = persistEvent(
-                db,
-                deps,
-                engine,
-                source,
-                sessionId,
-                agentRowKey,
-                projectKey,
-                pos.offset,
-                {
-                  sessionId: event.sessionId,
-                  agentId: event.agentId,
-                  parentAgentId: event.parentAgentId,
-                  kind: "ingest.error",
-                  ts: event.ts,
-                  cwd: event.cwd,
-                  error: {
-                    message: `usage-anomaly: ${event.usageKey} had a component below the tracked max`,
-                    reason: "usage-anomaly",
-                    path: pos.path,
-                    offset: pos.offset,
-                    line: pos.line,
-                  },
-                },
-              );
-              stored.push(anomaly);
-            } else if (isZeroUsageDelta(delta)) {
-              // Every component matches the tracked max exactly: nothing new to count, silently.
-              usageForStorage = undefined;
-            } else {
-              // Every component is ≥ the tracked max, and at least one grew: count only the
-              // positive delta, and advance the tracked max to this line's values.
-              updateUsageDedupeMax(db, source, event.sessionId, event.usageKey, next);
-              const deltaUsage: CrowEventUsage = { ...delta, model: usage.model };
-              usageForStorage = applyUsage(
-                db,
-                sessionId,
-                agentRowKey,
-                projectKey,
-                deltaUsage,
-                event.ts,
-              );
-            }
-          }
-        } else {
-          usageForStorage = applyUsage(db, sessionId, agentRowKey, projectKey, usage, event.ts);
-        }
-      }
-
-      // A usage-only continuation line (no text, e.g. a streamed `tool_use`-only assistant chunk,
-      // round 4 `map-line.ts` change) whose usage ended up counting nothing this line — either a
-      // zero delta or a rejected anomaly — would otherwise persist as a content-free
-      // `assistant.message` row and fill the timeline with noise. Skip it: the line was still
-      // dedupe-marked above (R16), and, for the anomaly case, the `ingest.error` above already
-      // recorded it — there's nothing else this row would carry.
-      if (
-        event.kind === "assistant.message" &&
-        event.text === undefined &&
-        usageForStorage === undefined
-      ) {
-        continue;
-      }
-
-      const eventToStore: PartialCrowEvent = { ...event, usage: usageForStorage };
-      const full = persistEvent(
-        db,
-        deps,
-        engine,
-        source,
-        sessionId,
-        agentRowKey,
-        projectKey,
-        pos.offset,
-        eventToStore,
-      );
-      stored.push(full);
-    }
+    stored = ingestInTx(db, deps, input.events);
 
     db.query(
       `INSERT INTO ingest_offsets (path, inode, byte_offset, state_json, updated_at) VALUES (?, ?, ?, ?, ?)
@@ -792,6 +1081,23 @@ export function ingestBatch(
   });
 
   run.immediate();
+  return stored;
+}
+
+/**
+ * {@link ingestBatch} without a file offset: the entry point of the lanes that have no file to
+ * resume (hooks, OTLP). Same transaction, same event semantics; callers publish the returned
+ * events after it returns, with no `await` in between.
+ */
+export function ingestEvents(
+  db: Database,
+  deps: IngestBatchDeps,
+  events: readonly PendingEvent[],
+): CrowEvent[] {
+  let stored: CrowEvent[] = [];
+  db.transaction(() => {
+    stored = ingestInTx(db, deps, events);
+  }).immediate();
   return stored;
 }
 
@@ -837,10 +1143,16 @@ export function stats(db: Database): IngestStats {
   const rows = db
     .query<{ name: string; value: number }, []>("SELECT name, value FROM ingest_stats")
     .all();
-  const result: IngestStats = { semanticDuplicates: 0, usageAnomalies: 0, errorsByReason: {} };
+  const result: IngestStats = {
+    semanticDuplicates: 0,
+    usageAnomalies: 0,
+    laneDuplicates: 0,
+    errorsByReason: {},
+  };
   for (const row of rows) {
     if (row.name === "semantic_duplicates") result.semanticDuplicates = row.value;
     else if (row.name === "usage_anomalies") result.usageAnomalies = row.value;
+    else if (row.name === "lane_duplicates") result.laneDuplicates = row.value;
     else if (row.name.startsWith("errors:")) {
       const reason = row.name.slice("errors:".length) as IngestErrorReason;
       result.errorsByReason[reason] = row.value;
@@ -901,23 +1213,33 @@ export function upsertAgentMeta(
   );
 }
 
-function activeAgentFor(
-  db: Database,
-  sessionId: string,
-): { agentId: string; type: string | null } | null {
+/** The session's active agent plus `activeAgentAt` (BD1): the latest agent start/stop timestamp seen. */
+interface ActiveAgent {
+  agent: { agentId: string; type: string | null } | null;
+  at: number | null;
+}
+
+function activeAgentFor(db: Database, sessionId: string): ActiveAgent {
   const row = db
     .query<{ agent_id: string | null; type: string | null }, [string]>(
       `SELECT agent_id, type FROM agents WHERE session_id = ? AND agent_id IS NOT NULL AND ended_at IS NULL
        ORDER BY last_event_at DESC LIMIT 1`,
     )
     .get(sessionId);
-  return row && row.agent_id !== null ? { agentId: row.agent_id, type: row.type } : null;
+  // Derived, not stored: the newest of every subagent's first-event and end timestamps.
+  const at = db
+    .query<{ at: number | null }, [string]>(
+      `SELECT MAX(MAX(COALESCE(started_at, 0), COALESCE(ended_at, 0))) AS at FROM agents
+       WHERE session_id = ? AND agent_id IS NOT NULL`,
+    )
+    .get(sessionId);
+  return {
+    agent: row && row.agent_id !== null ? { agentId: row.agent_id, type: row.type } : null,
+    at: at?.at ? at.at : null,
+  };
 }
 
-function sessionSummaryFromRow(
-  row: SessionRow,
-  activeAgent: { agentId: string; type: string | null } | null,
-): SessionSummary {
+function sessionSummaryFromRow(row: SessionRow, active: ActiveAgent): SessionSummary {
   return {
     id: row.id,
     engine: row.engine,
@@ -929,7 +1251,9 @@ function sessionSummaryFromRow(
     endedAt: row.ended_at,
     model: row.model,
     lastPrompt: row.last_prompt,
-    activeAgent,
+    lastPromptAt: row.last_prompt_at,
+    activeAgent: active.agent,
+    activeAgentAt: active.at,
     totals: totalsFromRow(row),
   };
 }

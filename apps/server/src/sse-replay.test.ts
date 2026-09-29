@@ -7,7 +7,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import type { Server } from "bun";
-import { createUlidFactory, ingestBatch, migrate } from "@crow/core";
+import { createUlidFactory, ingestBatch, ingestEvents, migrate } from "@crow/core";
 import type {
   BusListener,
   CrowEvent,
@@ -292,5 +292,87 @@ describe("sse-replay (R24)", () => {
     const res = routeApi(req, new URL(req.url), ctx);
 
     expect(res.status).toBe(409);
+  });
+
+  describe("revision rows (D5)", () => {
+    const match = (key: string) => ({ key, mode: "exact" as const });
+    const pendingMatched = (
+      source: "otel" | "transcript",
+      eventOverrides: Partial<PartialCrowEvent>,
+    ): PendingEvent =>
+      makePending(
+        { source, lineHash: `h-${Math.random()}` },
+        {
+          kind: "tool.post",
+          tool: { name: "Bash", callId: "c1" },
+          match: match("tool-post:c1"),
+          ...eventOverrides,
+        },
+      );
+    const deps = (): IngestBatchDeps => ({
+      nextId: createUlidFactory("00000000000000000000000000", () => Date.now()),
+      now: () => Date.now(),
+      idleMs: 300_000,
+    });
+
+    test("(g) the revision arrives once across the relay; the fact keeps its id", async () => {
+      // Covers: R11
+      const db = freshDb();
+      const bus = new FakeBus();
+      const d = deps();
+      const before = ingestOne(db, d, { text: "earlier" });
+      const { reader } = connect(db, bus, { lastEventId: before.id });
+      await readFrames(reader, 1); // retry
+
+      const [fact] = ingestEvents(db, d, [
+        pendingMatched("otel", { tool: { name: "Bash", callId: "c1", ms: 5, msSource: "engine" } }),
+      ]);
+      bus.publish([fact!]);
+      const [revision] = ingestEvents(db, d, [
+        pendingMatched("transcript", { tool: { name: "Bash", callId: "c1", ok: true } }),
+      ]);
+      bus.publish([revision!]);
+
+      const frames = await readFrames(reader, 2);
+      expect(frames).toHaveLength(2);
+      expect(frames[0]).toContain(`id: ${fact!.id}`);
+      expect(frames[1]).toContain(`id: ${revision!.id}`);
+      const body = JSON.parse(frames[1]!.split("data: ")[1]!) as CrowEvent;
+      expect(body.kind).toBe("revision");
+      expect(body.revision!.of).toBe(fact!.id);
+      expect(body.revision!.fact.id).toBe(fact!.id);
+      expect(revision!.id > fact!.id).toBe(true);
+      expect(fact!.id > before.id).toBe(true);
+      await reader.cancel();
+    });
+
+    test("an earlier Last-Event-ID receives the fused fact once and then the revision", async () => {
+      // Covers: R11
+      const db = freshDb();
+      const bus = new FakeBus();
+      const d = deps();
+      const before = ingestOne(db, d, { text: "earlier" });
+      const [fact] = ingestEvents(db, d, [
+        pendingMatched("otel", { tool: { name: "Bash", callId: "c1", ms: 5, msSource: "engine" } }),
+      ]);
+      const [revision] = ingestEvents(db, d, [
+        pendingMatched("transcript", { tool: { name: "Bash", callId: "c1", ok: true } }),
+      ]);
+
+      const { reader } = connect(db, bus, { lastEventId: before.id });
+      const frames = await readFrames(reader, 3); // retry + fact + revision
+      expect(frames[1]).toContain(`id: ${fact!.id}`);
+      const replayedFact = JSON.parse(frames[1]!.split("data: ")[1]!) as CrowEvent;
+      expect(replayedFact.tool?.ok).toBe(true); // the replay serves the fused body
+      expect(frames[2]).toContain(`id: ${revision!.id}`);
+
+      // A cursor at the fact: only the revision follows, and the fact id is not re-sent.
+      const later = connect(db, bus, { lastEventId: fact!.id });
+      const laterFrames = await readFrames(later.reader, 2);
+      expect(laterFrames[1]).toContain(`id: ${revision!.id}`);
+      expect(laterFrames[1]).not.toContain(`id: ${fact!.id}`);
+      await reader.cancel();
+      await later.reader.cancel();
+    });
   });
 });

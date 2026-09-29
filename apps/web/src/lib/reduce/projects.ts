@@ -74,25 +74,57 @@ function newSession(e: CrowEvent, id: string): SessionSummary {
     endedAt: null,
     model: null,
     lastPrompt: null,
+    lastPromptAt: null,
     activeAgent: null,
+    activeAgentAt: null,
     totals: emptyTotals(),
   };
 }
 
-export function updateSession(s: SessionSummary, e: CrowEvent): SessionSummary {
+/**
+ * The fact a stream row stands for: a `revision` carries the corrected fact (D5) and folds as it
+ * (the effects below are `ts`-guarded, so repeating one is harmless); anything else is itself.
+ */
+export function factOf(e: CrowEvent): CrowEvent {
+  return e.kind === "revision" && e.revision !== undefined ? e.revision.fact : e;
+}
+
+/**
+ * Folds one event (or the fact of a `revision`) into a session summary. Every non-monotone effect
+ * is guarded by `ts`, mirroring the store (BD1): an `ended` session revives only with
+ * `ts > endedAt`, `lastPrompt` changes only with `ts >= lastPromptAt`, and the active agent changes
+ * only with `ts >= activeAgentAt`.
+ */
+export function updateSession(s: SessionSummary, row: CrowEvent): SessionSummary {
+  const e = factOf(row);
   const next: SessionSummary = { ...s, lastEventAt: Math.max(s.lastEventAt, e.ts) };
   if (e.kind === "session.end") {
     next.status = "ended";
-    next.endedAt = e.ts;
-  } else if (next.status !== "live") {
-    next.status = "live"; // any later event resumes the session (D10)
-    next.endedAt = null;
+    next.endedAt = Math.max(s.endedAt ?? e.ts, e.ts);
+  } else if (s.status === "ended") {
+    if (s.endedAt === null || e.ts > s.endedAt) {
+      next.status = "live"; // a strictly later event resumes the session (D10)
+      next.endedAt = null;
+    }
+  } else if (s.status !== "live") {
+    next.status = "live"; // idle → live on any event (D10)
   }
-  if (e.kind === "prompt" && e.text !== undefined) next.lastPrompt = e.text;
+  if (
+    e.kind === "prompt" &&
+    e.text !== undefined &&
+    (s.lastPromptAt === null || e.ts >= s.lastPromptAt)
+  ) {
+    next.lastPrompt = e.text;
+    next.lastPromptAt = e.ts;
+  }
   if (e.kind === "agent.start" && e.agentId !== null) {
-    next.activeAgent = { agentId: e.agentId, type: e.agent?.type ?? null };
-  } else if (e.kind === "agent.stop" && next.activeAgent?.agentId === e.agentId) {
-    next.activeAgent = null;
+    if (s.activeAgentAt === null || e.ts >= s.activeAgentAt) {
+      next.activeAgent = { agentId: e.agentId, type: e.agent?.type ?? null };
+      next.activeAgentAt = e.ts;
+    }
+  } else if (e.kind === "agent.stop") {
+    if (s.activeAgent?.agentId === e.agentId) next.activeAgent = null;
+    next.activeAgentAt = Math.max(s.activeAgentAt ?? e.ts, e.ts);
   }
   if (e.usage !== undefined) {
     next.totals = addUsage(s.totals, e.usage);
@@ -102,7 +134,8 @@ export function updateSession(s: SessionSummary, e: CrowEvent): SessionSummary {
 }
 
 /** Folds one event into the data (no cursor check; see {@link applyToProjects}). */
-function foldEvent(data: ProjectsData, e: CrowEvent): ProjectsData {
+function foldEvent(data: ProjectsData, row: CrowEvent): ProjectsData {
+  const e = factOf(row);
   const prev = data.projects[e.projectKey];
   const sessionId = `${e.engine}:${e.sessionId}`;
   const project: ProjectSummary = prev ?? {
