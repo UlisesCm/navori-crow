@@ -255,6 +255,36 @@ describe("REST contracts (R25-R27, R33)", () => {
     });
   });
 
+  test("percent-encoded session ids resolve; a malformed escape is 400 invalid-id", async () => {
+    // Covers: R26, R27
+    await withTempDir(async (dir) => {
+      const now = Date.now();
+      const handle = await startApp(testConfig(dir), { now: () => now });
+      try {
+        const deps: IngestBatchDeps = {
+          nextId: createUlidFactory("00000000000000000000000000", () => now),
+          now: () => now,
+          idleMs: 5 * 60_000,
+        };
+        seedFixture({ db: handle.db, deps });
+        const base = `http://127.0.0.1:${handle.server.port}`;
+
+        for (const id of ["claude%3As1", "claude:s1"]) {
+          expect((await fetch(`${base}/api/sessions/${id}`)).status).toBe(200);
+          expect((await fetch(`${base}/api/sessions/${id}/events`)).status).toBe(200);
+        }
+        expect((await fetch(`${base}/api/sessions/claude%3Anope`)).status).toBe(404);
+        for (const path of ["/api/sessions/%E0%A4%A", "/api/sessions/%E0%A4%A/events"]) {
+          const res = await fetch(`${base}${path}`);
+          expect(res.status).toBe(400);
+          expect(((await res.json()) as { error: string }).error).toBe("invalid-id");
+        }
+      } finally {
+        await handle.stop();
+      }
+    });
+  });
+
   test("the Host/Origin guard still applies to REST routes (R28)", async () => {
     // Covers: R28
     await withTempDir(async (dir) => {

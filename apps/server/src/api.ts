@@ -1,7 +1,8 @@
 /**
  * Synchronous REST handlers (design.md § REST, `apps/server/src/api.ts`).
  * Covers R25–R27, R33. Every response is JSON; errors are `{ error: string }`
- * with 400 for a malformed parameter, 404 for an unknown id, and 409
+ * with 400 for a malformed parameter (including `invalid-id`, a path id with a
+ * bad percent-escape), 404 for an unknown id, and 409
  * `unknown-cursor` for a well-formed but never-stored `after` (D9).
  *
  * `routeApi` assumes the caller (`server.ts`) already ran the request through
@@ -196,6 +197,19 @@ const SESSION_EVENTS_PATH = /^\/api\/sessions\/([^/]+)\/events$/;
 const SESSION_DETAIL_PATH = /^\/api\/sessions\/([^/]+)$/;
 
 /**
+ * Decodes a `:id` path segment once (clients send `encodeURIComponent(id)`, so
+ * `claude:s1` arrives as `claude%3As1`); a literal colon passes through. Returns
+ * `null` on a malformed escape (`URIError`), which the router maps to 400 `invalid-id`.
+ */
+function decodeSessionId(raw: string): string | null {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Routes an already-guarded `/api/*` request (except `/api/stream`, which
  * `server.ts` dispatches to `sse.ts` before reaching here) to its handler.
  */
@@ -208,10 +222,15 @@ export function routeApi(req: Request, url: URL, ctx: RestContext): Response {
   if (url.pathname === "/api/stats") return handleStats(ctx);
 
   const eventsMatch = SESSION_EVENTS_PATH.exec(url.pathname);
-  if (eventsMatch !== null) return handleSessionEvents(eventsMatch[1]!, url, ctx);
-
-  const detailMatch = SESSION_DETAIL_PATH.exec(url.pathname);
-  if (detailMatch !== null) return handleSessionDetail(detailMatch[1]!, ctx);
+  const detailMatch = eventsMatch === null ? SESSION_DETAIL_PATH.exec(url.pathname) : null;
+  const rawId = (eventsMatch ?? detailMatch)?.[1];
+  if (rawId !== undefined) {
+    const sessionId = decodeSessionId(rawId);
+    if (sessionId === null) return jsonError(400, "invalid-id");
+    return eventsMatch !== null
+      ? handleSessionEvents(sessionId, url, ctx)
+      : handleSessionDetail(sessionId, ctx);
+  }
 
   return jsonError(404, "not-found");
 }
