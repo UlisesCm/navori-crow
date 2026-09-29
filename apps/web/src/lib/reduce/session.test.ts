@@ -68,7 +68,9 @@ function snapshot(cursor: string, agents: AgentNode[] = []): SessionDetailRespon
       endedAt: null,
       model: null,
       lastPrompt: null,
+      lastPromptAt: null,
       activeAgent: null,
+      activeAgentAt: null,
       totals: { ...emptyTotals(), input: 100, costUsd: 1 },
     },
     agents,
@@ -183,5 +185,88 @@ describe("cost totals", () => {
     expect(s.value.session.totals.unpricedUsages).toBe(1);
     expect(s.value.session.totals.costUsd).toBe(1);
     expect(s.value.session.status).toBe("ended");
+  });
+});
+
+// A `revision` row carries the corrected fact of an earlier event (D5).
+function revision(n: number, of: number, fact: CrowEvent): CrowEvent {
+  return ev(n, {
+    kind: "revision",
+    ts: fact.ts,
+    agentId: fact.agentId,
+    revision: { of: id(of), fact: { ...fact, id: id(of) } },
+  });
+}
+
+describe("BD1: ts-guarded effects with revisions and late facts (session detail)", () => {
+  // Covers: R11, R13
+  test("(1) a late prompt, alone or as a revision of an earlier one, never regresses lastPrompt", () => {
+    let s = sessionFromSnapshot(snapshot(id(0)));
+    const p1 = ev(1, { kind: "prompt", text: "P1", ts: 100 });
+    s = applyToSession(s, p1);
+    s = applyToSession(s, ev(2, { kind: "prompt", text: "P2", ts: 200 }));
+    s = applyToSession(s, revision(3, 1, { ...p1, text: "P1 (full)", ts: 95 }));
+    expect(s.value.session.lastPrompt).toBe("P2");
+    expect(s.value.session.lastPromptAt).toBe(200);
+    s = applyToSession(s, ev(4, { kind: "prompt", text: "P0 late", ts: 50 }));
+    expect(s.value.session.lastPrompt).toBe("P2");
+  });
+
+  // Covers: R13
+  test("(2) agent.stop before agent.start (fused later): the agent stays done and inactive", () => {
+    let s = sessionFromSnapshot(snapshot(id(0)));
+    s = applyToSession(s, ev(1, { kind: "agent.stop", agentId: "a1", ts: 300 }));
+    const start = ev(2, {
+      kind: "agent.start",
+      agentId: "a1",
+      ts: 100,
+      agent: { type: "explorer" },
+    });
+    s = applyToSession(s, start);
+    s = applyToSession(
+      s,
+      revision(3, 2, { ...start, agent: { type: "explorer", description: "d" } }),
+    );
+    const a1 = s.value.agents.find((a) => a.agentId === "a1")!;
+    expect(a1.status).toBe("done");
+    expect(a1.endedAt).toBe(300);
+    expect(a1.type).toBe("explorer");
+    expect(a1.description).toBe("d"); // metadata still filled by the revision
+    expect(s.value.session.activeAgent).toBeNull();
+    expect(s.value.session.activeAgentAt).toBe(300);
+  });
+
+  // Covers: R13
+  test("an agent.start with ts >= activeAgentAt sets the active agent; an older one does not", () => {
+    let s = sessionFromSnapshot(snapshot(id(0)));
+    s = applyToSession(s, ev(1, { kind: "agent.start", agentId: "a1", ts: 100 }));
+    s = applyToSession(s, ev(2, { kind: "agent.start", agentId: "a2", ts: 50 }));
+    expect(s.value.session.activeAgent?.agentId).toBe("a1");
+    s = applyToSession(s, ev(3, { kind: "agent.start", agentId: "a3", ts: 100 }));
+    expect(s.value.session.activeAgent?.agentId).toBe("a3");
+  });
+
+  // Covers: R11
+  test("(3) SessionEnd, then an event with a smaller ts: ended; a strictly later one revives", () => {
+    let s = sessionFromSnapshot(snapshot(id(0)));
+    s = applyToSession(s, ev(1, { kind: "session.end", ts: 500 }));
+    s = applyToSession(s, ev(2, { kind: "prompt", text: "old", ts: 400 }));
+    expect(s.value.session.status).toBe("ended");
+    s = applyToSession(s, revision(3, 2, ev(2, { kind: "prompt", text: "old", ts: 450 })));
+    expect(s.value.session.status).toBe("ended");
+    s = applyToSession(s, ev(4, { kind: "prompt", text: "new", ts: 501 }));
+    expect(s.value.session.status).toBe("live");
+  });
+
+  // Covers: R11
+  test("a revision row never touches totals (it carries no usage) and is folded with the cursor rule", () => {
+    let s = sessionFromSnapshot(snapshot(id(0)));
+    const call = ev(1, { kind: "tool.post", tool: { name: "Bash" } });
+    s = applyToSession(s, call);
+    const before = s.value.session.totals;
+    s = applyToSession(s, revision(2, 1, { ...call, tool: { name: "Bash", ok: true } }));
+    expect(s.value.session.totals).toEqual(before);
+    expect(s.lastApplied).toBe(id(2));
+    expect(applyToSession(s, revision(2, 1, call))).toBe(s); // a replayed revision id is ignored
   });
 });

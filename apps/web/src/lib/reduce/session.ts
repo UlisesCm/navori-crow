@@ -6,7 +6,7 @@
 import type { AgentNode, CrowEvent, SessionDetailResponse, SessionSummary } from "@crow/core/types";
 import { applyMany, applyOne, fromSnapshot, type Cursored } from "./cursor";
 import { MAIN_AGENT } from "./feed";
-import { addUsage, emptyTotals, updateSession } from "./projects";
+import { addUsage, emptyTotals, factOf, updateSession } from "./projects";
 
 /** What the detail view renders next to the timeline. */
 export interface SessionData {
@@ -49,11 +49,10 @@ function updateAgent(a: AgentNode, e: CrowEvent): AgentNode {
   if (e.kind === "agent.start") {
     next.type = e.agent?.type ?? next.type;
     next.description = e.agent?.description ?? next.description;
-    next.status = "running";
-    next.endedAt = null;
+    // Metadata only: a finished agent never revives (BD1); the row is created `running`.
   } else if (e.kind === "agent.stop") {
     next.status = "done";
-    next.endedAt = e.ts;
+    next.endedAt = a.endedAt ?? e.ts;
   }
   if (e.usage !== undefined) {
     next.totals = addUsage(a.totals, e.usage);
@@ -62,7 +61,8 @@ function updateAgent(a: AgentNode, e: CrowEvent): AgentNode {
   return next;
 }
 
-function foldEvent(data: SessionData, e: CrowEvent): SessionData {
+function foldEvent(data: SessionData, row: CrowEvent): SessionData {
+  const e = factOf(row);
   const session = updateSession(data.session, e);
   if (e.agentId === null) return { ...data, session };
   const known = data.agents.some((a) => a.agentId === e.agentId);

@@ -106,3 +106,66 @@ describe("rollDay", () => {
     expect(s.value.projects["aaaaaaaaaaaa"]!.today.costUsd).toBe(0.5);
   });
 });
+
+function revision(n: number, of: number, fact: CrowEvent): CrowEvent {
+  return ev(n, {
+    kind: "revision",
+    ts: fact.ts,
+    revision: { of: id(of), fact: { ...fact, id: id(of) } },
+  });
+}
+
+describe("BD1: ts-guarded effects with revisions and late facts (home)", () => {
+  const card = (s: ReturnType<typeof projectsFromSnapshot>) =>
+    s.value.projects["aaaaaaaaaaaa"]!.sessions[0]!;
+
+  // Covers: R11, R13
+  test("(1) a prompt revision or late prompt never regresses lastPrompt", () => {
+    let s = projectsFromSnapshot(empty);
+    const p1 = ev(1, { kind: "prompt", text: "P1", ts: TODAY + 100 });
+    s = applyToProjects(s, p1);
+    s = applyToProjects(s, ev(2, { kind: "prompt", text: "P2", ts: TODAY + 200 }));
+    s = applyToProjects(s, revision(3, 1, { ...p1, text: "P1 full", ts: TODAY + 95 }));
+    expect(card(s).lastPrompt).toBe("P2");
+    expect(card(s).lastPromptAt).toBe(TODAY + 200);
+  });
+
+  // Covers: R13
+  test("(2) agent.stop, then an older agent.start (also as a revision): no active agent", () => {
+    let s = projectsFromSnapshot(empty);
+    s = applyToProjects(s, ev(1, { kind: "agent.start", agentId: "a1", ts: TODAY + 10 }));
+    expect(card(s).activeAgent?.agentId).toBe("a1");
+    s = applyToProjects(s, ev(2, { kind: "agent.stop", agentId: "a1", ts: TODAY + 300 }));
+    expect(card(s).activeAgent).toBeNull();
+    const start = ev(3, { kind: "agent.start", agentId: "a1", ts: TODAY + 100 });
+    s = applyToProjects(s, start);
+    s = applyToProjects(s, revision(4, 3, start));
+    expect(card(s).activeAgent).toBeNull();
+    expect(card(s).activeAgentAt).toBe(TODAY + 300);
+  });
+
+  // Covers: R11
+  test("(3) SessionEnd then an older event or revision: still ended; a later event revives it", () => {
+    let s = projectsFromSnapshot(empty);
+    s = applyToProjects(s, ev(1, { kind: "session.end", ts: TODAY + 500 }));
+    s = applyToProjects(s, ev(2, { kind: "prompt", text: "old", ts: TODAY + 400 }));
+    s = applyToProjects(s, revision(3, 2, ev(2, { kind: "prompt", text: "old", ts: TODAY + 450 })));
+    expect(card(s).status).toBe("ended");
+    expect(card(s).endedAt).toBe(TODAY + 500);
+    s = applyToProjects(s, ev(4, { kind: "assistant.message", ts: TODAY + 501 }));
+    expect(card(s).status).toBe("live");
+  });
+
+  // Covers: R11, R13
+  test("a revision of a tool.error fact updates the project's lastError and never the totals", () => {
+    let s = projectsFromSnapshot(empty);
+    const call = ev(1, { kind: "tool.post", tool: { name: "Bash" } });
+    s = applyToProjects(s, call);
+    s = applyToProjects(
+      s,
+      revision(2, 1, { ...call, kind: "tool.error", error: { message: "boom" } }),
+    );
+    expect(s.value.projects["aaaaaaaaaaaa"]!.lastError?.message).toBe("boom");
+    expect(card(s).totals.input).toBe(0);
+  });
+});

@@ -24,10 +24,22 @@ export interface FeedData {
 
 export type FeedState = Cursored<FeedData>;
 
-/** Sorts by id and drops repeated ids (first occurrence wins). */
+/**
+ * Replaces the fact a `revision` row corrects, in place, if the window holds it; otherwise a no-op.
+ * A revision is never appended (D5/D16): it only updates a fact the timeline already shows.
+ */
+function reviseIn(events: readonly CrowEvent[], revision: CrowEvent): CrowEvent[] {
+  const target = revision.revision;
+  if (target === undefined) return [...events];
+  return events.map((e) => (e.id === target.of ? target.fact : e));
+}
+
+/** Sorts by id, drops repeated ids (first occurrence wins) and folds `revision` rows into their facts. */
 function normalize(events: readonly CrowEvent[]): CrowEvent[] {
   const sorted = [...events].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  return sorted.filter((e, i) => i === 0 || e.id !== sorted[i - 1]!.id);
+  const unique = sorted.filter((e, i) => i === 0 || e.id !== sorted[i - 1]!.id);
+  const facts = unique.filter((e) => e.kind !== "revision");
+  return unique.filter((e) => e.kind === "revision").reduce(reviseIn, facts);
 }
 
 function trim(data: FeedData): FeedData {
@@ -48,6 +60,7 @@ export function feedFromEvents(
 }
 
 function append(data: FeedData, e: CrowEvent): FeedData {
+  if (e.kind === "revision") return { ...data, events: reviseIn(data.events, e) };
   return trim({ ...data, events: [...data.events, e] });
 }
 

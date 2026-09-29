@@ -4,6 +4,7 @@ import {
   applyManyToFeed,
   applyToColumns,
   applyToFeed,
+  COLUMN_WINDOW,
   feedFromEvents,
   type FeedState,
   filterEvents,
@@ -150,5 +151,63 @@ describe("filters and labels", () => {
     expect(promptOrigin(ev(3))).toBeNull();
     expect(kindLabel(user)).toBe("Prompt del usuario");
     expect(kindLabel(sub)).toBe("Instrucción del agente padre");
+  });
+});
+
+describe("revision rows (D5, D16)", () => {
+  const fact = ev(1, { kind: "tool.post", tool: { name: "Bash" } });
+  const revise = (n: number, of: number, patch: Partial<CrowEvent>): CrowEvent =>
+    ev(n, {
+      kind: "revision",
+      revision: { of: id(of), fact: { ...ev(of, { kind: "tool.post" }), ...patch } },
+    });
+
+  // Covers: R11, R13
+  test("a revision updates its fact in place and is never appended to the feed", () => {
+    let s = applyManyToFeed(feedFromEvents([], null, TIMELINE_WINDOW), [fact, ev(2)]);
+    s = applyToFeed(s, revise(3, 1, { tool: { name: "Bash", ok: true, ms: 12 } }));
+    expect(s.value.events.map((e) => e.id)).toEqual([id(1), id(2)]);
+    expect(s.value.events[0]!.tool).toEqual({ name: "Bash", ok: true, ms: 12 });
+    expect(s.lastApplied).toBe(id(3)); // the cursor still advances
+  });
+
+  // Covers: R11
+  test("a revision of a fact the window does not hold is ignored (not appended)", () => {
+    const s = applyToFeed(
+      applyManyToFeed(feedFromEvents([], null, TIMELINE_WINDOW), [ev(5)]),
+      revise(6, 1, { text: "gone" }),
+    );
+    expect(s.value.events.map((e) => e.id)).toEqual([id(5)]);
+  });
+
+  // Covers: R13
+  test("a page carrying a fused fact and its revision applies the revision without duplicates", () => {
+    const fused = ev(1, { kind: "tool.post", tool: { name: "Bash", ok: true } });
+    const s = feedFromEvents(
+      [fused, ev(2), revise(3, 1, { tool: { name: "Bash", ok: true } })],
+      null,
+      null,
+    );
+    expect(s.value.events.map((e) => e.id)).toEqual([id(1), id(2)]);
+  });
+
+  // Covers: R11
+  test("mergeOlder folds revisions from the older page and keeps them out of the window", () => {
+    const base = applyManyToFeed(feedFromEvents([], null, TIMELINE_WINDOW), [ev(10)]);
+    const merged = mergeOlder(
+      base,
+      [fact, revise(3, 1, { tool: { name: "Bash", ok: false } })],
+      true,
+    );
+    expect(merged.value.events.map((e) => e.id)).toEqual([id(1), id(10)]);
+    expect(merged.value.events[0]!.tool?.ok).toBe(false);
+  });
+
+  // Covers: R11
+  test("a revision routed to a split column updates that column's fact only", () => {
+    const cols = { aaaaaaaaaaaa: applyManyToFeed(feedFromEvents([], null, COLUMN_WINDOW), [fact]) };
+    const next = applyToColumns(cols, revise(2, 1, { tool: { name: "Bash", ok: true } }));
+    expect(next["aaaaaaaaaaaa"]!.value.events).toHaveLength(1);
+    expect(next["aaaaaaaaaaaa"]!.value.events[0]!.tool?.ok).toBe(true);
   });
 });
