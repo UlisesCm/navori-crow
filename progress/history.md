@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-29 16:20 — orchestrator — F1: lote B5.T3 (e2e de latencia, reinicio e hidratación)
+- Cambios: workspace nuevo `e2e/` (`@crow/e2e`, mismo patrón que `scripts/`) con `helpers.ts` (directorios temporales, `startApp` real en puerto 0, líneas sintéticas de Claude y cliente SSE mínimo), `latency.test.ts`, `restart.test.ts` y `hydrate.test.ts`. El `package.json` raíz agrega `e2e` a `workspaces` y a los globs de formato. Sin cambios de código de producción. Cubre R6, R16 y R29.
+- Quality gate: ✅ `bun run check` verde dos veces (234 pass / 1 todo / 0 fail), Pass 2 del reviewer; receipt `f1-b5t3-e2e` firmado.
+- Notas: la latencia usa el poll real de 1 s contra el presupuesto de 2000 ms (margen de ~1 s; vigilar en CI). Las comprobaciones de "nada nuevo" en reinicio e hidratación esperan 1.5 s fijos, porque una ausencia no se puede sondear; solo pueden dar un falso verde, nunca un falso rojo.
+- Commit / PR: feat/f1-b5t3-e2e
+
 ## 2026-09-29 15:10 — orchestrator — F1: lote B7.T2 (fixtures reales de Codex y contrato)
 - Cambios: anonimizador `--engine codex` (`scripts/anonymize/codex.ts`, con `forked_from_id` correlacionado como id de hilo) y buscador `scripts/find-codex-fixtures.ts`. Fixtures reales anonimizados `fixtures/codex/0.145.0/` (dos principales, fork fresco y fork con acumulado arrastrado), `0.155.1/` (principal, fork con historia copiada y guardian) y `0.146.0-alpha.3.1/`. `codex/contract.test.ts` con snapshots, casos (a)–(d) de `codex/usage.test.ts` sobre los forks reales, y `store.test.ts`/`pricing.test.ts` con el total de la sesión sin el acumulado arrastrado. En `map-line.ts`: el salto por `subagent_history_start_ordinal` aplica solo si el archivo trae historia copiada (segundo `session_meta`); el guardian toma su padre de `payload.parent_thread_id`; `reasoning`, `agent_message` y `tool_search_*` pasan a conocidos sin evento. `design.md` corregido con la evidencia de los fixtures; `tasks.md` marca B7.T2 y agrega B7.T3. Cubre R14, R4, R20 y R21.
 - Quality gate: ✅ `bun run check` verde (214 pass / 1 todo / 0 fail), Pass 2 del reviewer; receipt `f1-b7t2-contract` firmado.

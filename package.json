@@ -3,13 +3,13 @@
   "version": "0.0.0",
   "private": true,
   "packageManager": "bun@1.4.2",
-  "workspaces": ["apps/*", "packages/*", "packages/adapters/*", "scripts"],
+  "workspaces": ["e2e", "apps/*", "packages/*", "packages/adapters/*", "scripts"],
   "scripts": {
     "dev": "bun run --filter '*' dev",
     "build": "bun run --filter '*' build",
     "lint": "oxlint .",
-    "format": "oxfmt \"apps/**/*.{ts,tsx,svelte}\" \"packages/**/*.ts\" \"scripts/**/*.ts\" \"fixtures/**/*.ts\"",
-    "format:check": "oxfmt --check \"apps/**/*.{ts,tsx,svelte}\" \"packages/**/*.ts\" \"scripts/**/*.ts\" \"fixtures/**/*.ts\"",
+    "format": "oxfmt \"e2e/**/*.ts\" \"apps/**/*.{ts,tsx,svelte}\" \"packages/**/*.ts\" \"scripts/**/*.ts\" \"fixtures/**/*.ts\"",
+    "format:check": "oxfmt --check \"e2e/**/*.ts\" \"apps/**/*.{ts,tsx,svelte}\" \"packages/**/*.ts\" \"scripts/**/*.ts\" \"fixtures/**/*.ts\"",
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun test",
     "check": "bun run format:check && bun run lint && bun run typecheck && bun run test"
