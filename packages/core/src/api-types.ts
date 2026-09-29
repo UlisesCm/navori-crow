@@ -140,11 +140,36 @@ export interface LaneCounters {
   rejected: Partial<Record<LaneRejection, number>>;
 }
 
-/** `GET /api/stats` `lanes`: only the hook lane so far (F2a B2.T2; OTLP joins in B4.T2). */
+/** State of the OTLP lane (D15). */
+export type OtlpLaneState = "listening" | "disabled" | "port-in-use" | "error";
+
+/** Snapshot of the OTLP lane. Counts only, never content (D15). */
+export interface OtlpLaneStatus {
+  state: OtlpLaneState;
+  /** The bound port while `listening`, else the configured one. */
+  port: number | null;
+  lastReceivedAt: number | null;
+  /** Export requests accepted (200). */
+  requests: number;
+  /** Records nobody owns or that carry no session (R17, `stats.otelUnattributed`). */
+  otelUnattributed: number;
+  /** Known records with no mapping (`stats.otelIgnored`). */
+  otelIgnored: number;
+  /** Requests answered 503 because the OTel FIFO was full. */
+  rejectedFull: number;
+  /** `ingest.error` events dropped because the OTel FIFO had no room for them (R17). */
+  errorsDropped: number;
+}
+
+/**
+ * `GET /api/stats` `lanes` (D15): per-engine hook counters, plus the OTLP lane. The OTLP receiver
+ * is process-wide (routing is by record signature, not by engine), so it sits beside `engines`.
+ */
 export interface LanesStatus {
   /** Server start, epoch ms: the counters are in-memory. */
   since: number;
   engines: Record<string, { hook: LaneCounters }>;
+  otlp: OtlpLaneStatus;
 }
 
 /** `GET /api/stats` */

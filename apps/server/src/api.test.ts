@@ -177,7 +177,11 @@ describe("REST contracts (R25-R27, R33)", () => {
             laneDuplicates: 0,
             errorsByReason: {},
           },
-          lanes: { since: expect.any(Number), engines: expect.any(Object) },
+          lanes: {
+            since: expect.any(Number),
+            engines: expect.any(Object),
+            otlp: expect.objectContaining({ state: "disabled" }),
+          },
         });
       } finally {
         await handle.stop();

@@ -208,18 +208,29 @@ export class IngestQueue {
     return true;
   }
 
+  /** Estimated bytes held by the OTel FIFO; returns to 0 once it is drained. */
+  get otelQueuedBytes(): number {
+    return this.otelBytes;
+  }
+
   /**
    * Enqueues already-routed OTel events as one all-or-nothing batch of `bytes` estimated bytes.
-   * `false` = full or stopped: the receiver answers 503 (D2); nothing is stored.
+   * `false` = full or stopped: the receiver answers 503 (D2); nothing is stored. The charge is an
+   * integer split across the events (the first `bytes % n` carry one extra), so what the drainer
+   * frees per event sums to exactly what was charged here.
    */
   enqueueOtel(events: readonly PendingEvent[], bytes: number): boolean {
     if (events.length === 0) return true;
-    if (this.stopped || this.otelBytes + bytes > (this.opts.otelMaxBytes ?? OTEL_QUEUE_MAX_BYTES)) {
+    const total = Math.max(0, Math.ceil(bytes));
+    if (this.stopped || this.otelBytes + total > (this.opts.otelMaxBytes ?? OTEL_QUEUE_MAX_BYTES)) {
       return false;
     }
-    const each = bytes / events.length;
-    for (const event of events) this.otel.push({ event, bytes: each });
-    this.otelBytes += bytes;
+    const base = Math.floor(total / events.length);
+    const extra = total % events.length;
+    events.forEach((event, i) => {
+      this.otel.push({ event, bytes: base + (i < extra ? 1 : 0) });
+    });
+    this.otelBytes += total;
     this.wake();
     return true;
   }

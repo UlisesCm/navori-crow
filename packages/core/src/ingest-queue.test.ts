@@ -378,6 +378,57 @@ describe("IngestQueue: two FIFOs, one drainer", () => {
   });
 });
 
+describe("IngestQueue: OTel byte accounting", () => {
+  const ev = (n: number) => ({
+    engine: "claude",
+    source: "otel" as const,
+    lineHash: `l${n}`,
+    part: "0",
+    pos: { path: "otel", offset: 0, line: 0 },
+    event: {
+      sessionId: `s${n}`,
+      agentId: null,
+      parentAgentId: null,
+      kind: "prompt" as const,
+      ts: T0,
+      cwd: "/tmp/proj",
+    },
+  });
+
+  // Covers: R14
+  test.each([
+    [3, 10],
+    [7, 3],
+    [4, 4],
+    [5, 1],
+  ])("%i events charged %i bytes: integer charge, exactly freed", async (count, bytes) => {
+    const h = harness();
+    h.queue.pause();
+    expect(
+      h.queue.enqueueOtel(
+        Array.from({ length: count }, (_, i) => ev(i)),
+        bytes,
+      ),
+    ).toBe(true);
+    expect(h.queue.otelQueuedBytes).toBe(bytes);
+    h.queue.resume();
+    await h.queue.idle();
+    expect(h.queue.otelQueuedBytes).toBe(0);
+    expect(h.queue.otelDepth).toBe(0);
+  });
+
+  // Covers: R14
+  test("a fractional estimate is rounded up once, and still returns to 0", async () => {
+    const h = harness();
+    h.queue.pause();
+    expect(h.queue.enqueueOtel([ev(1), ev(2), ev(3)], 9.5)).toBe(true);
+    expect(h.queue.otelQueuedBytes).toBe(10);
+    h.queue.resume();
+    await h.queue.idle();
+    expect(h.queue.otelQueuedBytes).toBe(0);
+  });
+});
+
 describe("IngestQueue: no lost wake", () => {
   // Covers: R1
   test.each(Array.from({ length: 14 }, (_, k) => k))(

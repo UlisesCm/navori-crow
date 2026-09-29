@@ -30,6 +30,8 @@ export type {
   LaneCounters,
   LaneRejection,
   LanesStatus,
+  OtlpLaneState,
+  OtlpLaneStatus,
   ProjectSummary,
   ProjectsResponse,
   SessionDetailResponse,

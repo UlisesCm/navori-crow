@@ -1,8 +1,17 @@
 /**
  * In-memory per-engine lane counters (design.md D15), served as `/api/stats.lanes`. Only the hook
- * lane exists so far; B4.T2 adds the OTLP lane. Counters reset with the process (`since`).
+ * lane is counted here; the OTLP lane's status is read from `otlp` (its own counters live in the
+ * receiver). Counters reset with the process (`since`).
  */
-import type { ClockFn, EngineId, LaneCounters, LaneRejection, LanesStatus } from "@crow/core";
+import type {
+  ClockFn,
+  EngineId,
+  LaneCounters,
+  LaneRejection,
+  LanesStatus,
+  OtlpLaneStatus,
+} from "@crow/core";
+import { laneStatus } from "./otlp-server";
 
 function emptyCounters(): LaneCounters {
   return { lastReceivedAt: null, lastStoredAt: null, received: 0, rejected: {} };
@@ -12,10 +21,14 @@ export class LaneMonitor {
   private readonly since: number;
   private readonly hook = new Map<EngineId, LaneCounters>();
 
-  /** Tracks exactly `engines`: deliveries naming any other engine are ignored (bounded keys). */
+  /**
+   * Tracks exactly `engines`: deliveries naming any other engine are ignored (bounded keys).
+   * `otlp` supplies the OTLP lane's status at snapshot time; default `disabled`.
+   */
   constructor(
     engines: readonly EngineId[],
     private readonly now: ClockFn,
+    private readonly otlp: () => OtlpLaneStatus = () => laneStatus("disabled", null),
   ) {
     this.since = now();
     for (const engine of engines) this.hook.set(engine, emptyCounters());
@@ -47,6 +60,6 @@ export class LaneMonitor {
     for (const [engine, counters] of this.hook) {
       engines[engine] = { hook: { ...counters, rejected: { ...counters.rejected } } };
     }
-    return { since: this.since, engines };
+    return { since: this.since, engines, otlp: this.otlp() };
   }
 }
