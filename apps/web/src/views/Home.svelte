@@ -36,14 +36,34 @@
   <p class="error">No se pudo cargar los proyectos: {store.error}</p>
 {:else if !store.loaded}
   <p class="muted">Cargando…</p>
-{:else if store.cards.length === 0}
-  <p class="muted">Aún no hay proyectos con actividad reciente.</p>
 {:else}
-  <div class="grid">
-    {#each store.cards as project (project.key)}
-      <ProjectCard {project} selected={selected.includes(project.key)} onToggle={toggle} />
-    {/each}
-  </div>
+  {#if store.cards.length === 0}
+    <p class="muted">Aún no hay proyectos con actividad reciente.</p>
+  {:else}
+    <div class="grid">
+      {#each store.cards as project (project.key)}
+        <ProjectCard {project} selected={selected.includes(project.key)} onToggle={toggle} />
+      {/each}
+    </div>
+  {/if}
+
+  {#if store.unattributed !== null}
+    {@const bucket = store.unattributed}
+    <details class="unattributed">
+      <summary>Sin atribuir ({bucket.sessions.length} {bucket.sessions.length === 1 ? "sesión" : "sesiones"})</summary>
+      <p class="muted">
+        Eventos que no se pudieron asociar a un repositorio (sin directorio de trabajo o telemetría OTLP sin sesión).
+      </p>
+      {#if bucket.lastError !== null}
+        <p class="error" title={bucket.lastError.message}>Último error: {bucket.lastError.message}</p>
+      {/if}
+      <p class="sessions">
+        {#each bucket.sessions as s (s.id)}
+          <a href={`#/session/${encodeURIComponent(s.id)}`}>Ver sesión {s.nativeId.slice(0, 8)}</a>
+        {/each}
+      </p>
+    </details>
+  {/if}
 {/if}
 
 <style>
@@ -58,6 +78,19 @@
     align-items: center;
     margin: 0 0 0.75rem;
     font-size: 0.875rem;
+  }
+  .unattributed {
+    margin-top: 1.5rem;
+    font-size: 0.875rem;
+  }
+  .unattributed summary {
+    cursor: pointer;
+    color: var(--muted);
+  }
+  .sessions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
   }
   .status {
     margin: 0 0 0.5rem;
