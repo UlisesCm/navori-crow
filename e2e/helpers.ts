@@ -42,15 +42,57 @@ export function makeSandbox(): Sandbox {
 }
 
 /** One user-prompt transcript line; `text` doubles as a unique marker. */
-export function promptLine(text: string, ts: number): string {
+export function promptLine(
+  text: string,
+  ts: number,
+  cwd = "/tmp/crow-e2e/proj",
+  sessionId = SESSION_ID,
+): string {
   return `${JSON.stringify({
     type: "user",
     uuid: `u-${text}`,
     timestamp: new Date(ts).toISOString(),
-    cwd: "/tmp/crow-e2e/proj",
-    sessionId: SESSION_ID,
+    cwd,
+    sessionId,
     message: { role: "user", content: text },
   })}\n`;
+}
+
+/** Codex `session_meta` rollout line (shape from fixtures/codex/0.155.1). */
+export function codexSessionMetaLine(threadId: string, cwd: string, ts: number): string {
+  const timestamp = new Date(ts).toISOString();
+  return `${JSON.stringify({
+    timestamp,
+    type: "session_meta",
+    payload: { session_id: threadId, id: threadId, timestamp, cwd, cli_version: "0.155.1" },
+  })}\n`;
+}
+
+/** Codex `event_msg.item_completed` UserMessage line; `text` doubles as a unique marker. */
+export function codexPromptLine(threadId: string, text: string, ts: number): string {
+  return `${JSON.stringify({
+    timestamp: new Date(ts).toISOString(),
+    type: "event_msg",
+    payload: {
+      type: "item_completed",
+      thread_id: threadId,
+      turn_id: "turn-1",
+      item: {
+        type: "UserMessage",
+        id: `item-${text}`,
+        content: [{ type: "text", text, text_elements: [] }],
+      },
+    },
+  })}\n`;
+}
+
+/** Rollout path under `<codexHome>/sessions/YYYY/MM/DD/`, matching the adapter's layout regex. */
+export function codexRolloutPath(codexHome: string, threadId: string, ts: number): string {
+  const iso = new Date(ts).toISOString();
+  const [date = ""] = iso.split("T");
+  const dir = join(codexHome, "sessions", date.replaceAll("-", "/"));
+  mkdirSync(dir, { recursive: true });
+  return join(dir, `rollout-${iso.slice(0, 19).replaceAll(":", "-")}-${threadId}.jsonl`);
 }
 
 export function writeTranscript(path: string, lines: readonly string[]): void {
