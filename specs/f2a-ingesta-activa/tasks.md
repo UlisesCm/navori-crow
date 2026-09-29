@@ -42,7 +42,7 @@ Lotes de 1–3 tareas; cada tarea declara los `R<n>` que cubre y sus tests (todo
 
 ## B7 · UI (depende de B2)
 
-- [ ] **B7.T1** (R11, R13, R29, R32) — Timeline con `hook`, `permission`, `turn.end`, `compact` y `api.request`; las filas `revision` actualizan el hecho y nunca se agregan al feed. · tests: `apps/web/src/lib/reduce/feed.test.ts`.
+- [x] **B7.T1** (R11, R13, R29, R32) — Timeline con `hook`, `permission`, `turn.end`, `compact` y `api.request`; las filas `revision` actualizan el hecho y nunca se agregan al feed. · tests: `apps/web/src/lib/reduce/feed.test.ts`.
 - [ ] **B7.T2** (R30) — Panel de hooks por sesión: ejecuciones, duración total y máxima, y veredictos bloqueantes, con estado vacío. · tests: `apps/web/src/lib/reduce/hooks.test.ts`, `apps/server/src/api.test.ts`.
 
 ## Aceptación (F2 criterios 1 y 2)

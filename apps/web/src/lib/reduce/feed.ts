@@ -4,6 +4,7 @@
  * pure timeline filters. Pure — no runes, no DOM, no clock.
  */
 import type { CrowEvent } from "@crow/core/types";
+import { formatDuration, usd } from "../format";
 import { applyMany, applyOne, fromSnapshot, type Cursored } from "./cursor";
 
 /** Render/retention cap of the session timeline (D16). */
@@ -135,6 +136,7 @@ export const NO_FILTER: TimelineFilter = { kind: null, agent: null, tool: null }
 export function filterEvents(events: readonly CrowEvent[], f: TimelineFilter): CrowEvent[] {
   return events.filter(
     (e) =>
+      isPainted(e) &&
       (f.kind === null || e.kind === f.kind) &&
       (f.agent === null || (e.agentId ?? MAIN_AGENT) === f.agent) &&
       (f.tool === null || e.tool?.name === f.tool),
@@ -152,7 +154,7 @@ export function filterOptions(events: readonly CrowEvent[]): FilterOptions {
   const kinds = new Set<string>();
   const agents = new Set<string>();
   const tools = new Set<string>();
-  for (const e of events) {
+  for (const e of events.filter(isPainted)) {
     kinds.add(e.kind);
     agents.add(e.agentId ?? MAIN_AGENT);
     if (e.tool !== undefined) tools.add(e.tool.name);
@@ -191,6 +193,7 @@ const KIND_LABELS: Record<string, string> = {
   hook: "Hook",
   permission: "Permiso",
   compact: "Compactación",
+  "turn.end": "Fin de turno",
   "instructions.loaded": "Instrucciones",
   usage: "Uso",
   "api.request": "Petición API",
@@ -210,11 +213,74 @@ export function rawKindLabel(kind: string): string {
   return KIND_LABELS[kind] ?? kind;
 }
 
-/** One-line detail of an event: tool name, text, agent type or error message. */
+/** Kinds the timeline never paints (D16): usage is folded into totals, revisions into their fact. */
+const UNPAINTED: ReadonlySet<string> = new Set(["usage", "revision"]);
+
+/** `true` when the timeline shows a row for this event (D16). */
+export function isPainted(e: CrowEvent): boolean {
+  return !UNPAINTED.has(e.kind);
+}
+
+/** `true` for a `hook` event whose verdict blocks (badge in the timeline, R29). */
+export function isBlockingHook(e: CrowEvent): boolean {
+  return e.kind === "hook" && e.hook?.blocking === true;
+}
+
+const join = (parts: ReadonlyArray<string | undefined>): string =>
+  parts.filter((p): p is string => p !== undefined && p !== "").join(" · ");
+
+const ms = (v: number | undefined): string | undefined =>
+  v === undefined ? undefined : formatDuration(v);
+
+const DECISIONS: Record<string, string> = { ask: "Pregunta", allow: "Permitido", deny: "Denegado" };
+
+/** One-line detail of an event (D16): per-kind Spanish copy, else tool name, text or agent type. */
 export function describeEvent(e: CrowEvent): string {
+  switch (e.kind) {
+    case "hook": {
+      const h = e.hook;
+      if (h === undefined) return e.text ?? "";
+      return join([
+        h.name,
+        h.phase,
+        h.verdict,
+        ms(h.ms),
+        h.blocking === true ? "bloqueante" : undefined,
+      ]);
+    }
+    case "permission": {
+      const p = e.permission;
+      const decision =
+        p?.decision === undefined ? "Solicitud" : (DECISIONS[p.decision] ?? p.decision);
+      const by = p?.decisionSource === undefined ? undefined : `por ${p.decisionSource}`;
+      return join([e.tool?.name, decision, by, p?.reason]);
+    }
+    case "turn.end":
+      if (e.turn?.ok === false) {
+        return e.turn.category === undefined
+          ? "Turno fallido"
+          : `Turno fallido: ${e.turn.category}`;
+      }
+      return "Fin de turno";
+    case "compact": {
+      const c = e.compact;
+      const state = c?.endedAt === undefined ? "en curso" : "terminada";
+      const dur =
+        c?.startedAt !== undefined && c.endedAt !== undefined
+          ? ms(c.endedAt - c.startedAt)
+          : undefined;
+      return join([c?.trigger, state, dur]);
+    }
+    case "api.request": {
+      const r = e.reported;
+      const cost = r?.costUsd === undefined ? undefined : usd.format(r.costUsd);
+      return join([r?.model ?? e.usage?.model, ms(r?.ms), cost]);
+    }
+    default:
+      break;
+  }
   if (e.error !== undefined) return e.error.message;
   if (e.tool !== undefined) return e.tool.name;
   if (e.agent?.type !== undefined) return e.agent.type;
-  if (e.hook !== undefined) return e.hook.name;
   return e.text ?? "";
 }
