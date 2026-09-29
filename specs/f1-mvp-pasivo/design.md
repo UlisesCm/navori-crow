@@ -86,12 +86,12 @@ Muestra: 280 rollouts de las versiones 0.145.0, 0.146.0-alpha, 0.154.0, 0.155.1,
 - **Subagentes: 185 de 280 archivos.**
   - `source.subagent` puede ser `thread_spawn` (111) u `other: "guardian"` (74).
   - `session_id` es la sesión raíz y es distinto de `id`. `parent_thread_id` coincide con `session_id` en 123 casos.
-  - 90 son forks y 81 traen `subagent_history_start_ordinal`: 3,356 líneas con `ordinal` menor son historia heredada, y **ninguna** es un `token_count`.
+  - 90 son forks y 81 traen `subagent_history_start_ordinal`. Solo cuando el archivo trae además un segundo `session_meta` (la copia del padre, línea 2) las líneas con `ordinal` menor son historia heredada: 3,356 líneas, y **ninguna** es un `token_count`. Un fork con un único `session_meta` (0.145.0 `id19` y `id32`, y el `guardian` 0.155.1 `id70`) trae ese campo pero ninguna copia: todos sus `token_count` tienen un `ordinal` menor que él y son propios.
 - **Tokens.**
   - `event_msg.token_count` aparece en 280/280 archivos. `info.total_token_usage` es acumulado **por hilo** y monótono dentro de un archivo: 0 retrocesos en 7,588 líneas, con 136 totales repetidos.
   - En el **primer** `token_count` de cada archivo, `total_token_usage` es igual a `last_token_usage` en sus cuatro componentes en **93/93 principales** y **183/184 subagentes**. El contador arranca en el propio hilo, así que el primer valor es la primera llamada de API de ese hilo: gasto real, no heredado.
     - El ejemplo del challenge (`total_tokens = 24154`) es uno de estos casos: su `last` también es 24154.
-  - **1 archivo** (0.145.0, fork sin `subagent_history_start_ordinal`) arrastra un acumulado: su primer `total_token_usage` supera a `last` por **2,218,759 tokens**. No coincide con el total del padre en el momento del spawn (5,314,371).
+  - **1 archivo** (0.145.0, fork `id19` con un único `session_meta`, sin historia copiada) arrastra un acumulado: su primer `total_token_usage` supera a `last` por **2,218,759 tokens**. No coincide con el total del padre en el momento del spawn (5,314,371).
   - `cached_input_tokens` es menor o igual que `input_tokens` en 4001/4001: el input **incluye** lo cacheado. `cache_write_input_tokens` vale siempre 0.
   - El modelo va en `turn_context.payload.model`: `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-6-astra` y `codex-auto-review`.
 - **Mensajes y herramientas.**
@@ -772,13 +772,13 @@ Estado persistido: `{ v, started, cwd, lastTs, openCalls: {callId: {name, ts, su
 
 ## Mapeo Codex (`packages/adapters/codex/src/map-line.ts`) — R14
 
-Estado persistido: `{ v, sessionId, agentId, parentAgentId, cwd, model, historyStart, lastTotal: {input, cached, cacheWrite, output} | null, openCalls, recentPrompts: [{fp, ts}] (≤ 32) }`. Todo evento lleva `cwd = state.cwd`.
+Estado persistido: `{ v, sessionId, agentId, parentAgentId, cwd, model, startOrdinal, historyStart, lastTotal: {input, cached, cacheWrite, output} | null, openCalls, recentPrompts: [{fp, ts}] (≤ 32) }`. Todo evento lleva `cwd = state.cwd`.
 
 | Línea | Eventos |
 |---|---|
-| Primer `session_meta` | En un main: `session.start`. En un subagente: `agent.start` (`type = thread_spawn.agent_role ?? source.subagent.other`, `description = agent_nickname`, `depth`). Fija en el estado `sessionId`, `agentId`, `parentAgentId`, `cwd` y `historyStart` |
-| `session_meta` posteriores | Nada |
-| `ordinal < historyStart` | Nada (historia heredada) |
+| Primer `session_meta` | En un main: `session.start`. En un subagente: `agent.start` (`type = thread_spawn.agent_role ?? source.subagent.other`, `description = agent_nickname`, `parent_thread_id` y `depth` desde `source.subagent.thread_spawn`, o `payload.parent_thread_id` si es un `guardian`). Fija en el estado `sessionId`, `agentId`, `parentAgentId`, `cwd` y `startOrdinal` (el `subagent_history_start_ordinal`, solo candidato) |
+| `session_meta` posteriores | Nada, pero prueban que el archivo trae historia copiada: `historyStart = startOrdinal` |
+| `ordinal < historyStart` | Nada (historia heredada). Sin segundo `session_meta`, `historyStart` sigue en `null` y no se omite ninguna línea |
 | `turn_context` | Nada; actualiza `model` y `cwd` |
 | `event_msg` `user_message` | `prompt` (≤ 8 KiB) con `semanticKey = um:<sha1(texto)>:<ts>`, donde `ts` es el de un prompt idéntico visto en `recentPrompts` hace ≤ 1000 ms, o el propio |
 | `response_item` `message` con `role=assistant` | `assistant.message` con `semanticKey = id:<payload.id>:<parte>` |
@@ -786,7 +786,7 @@ Estado persistido: `{ v, sessionId, agentId, parentAgentId, cwd, model, historyS
 | `response_item` `*_call_output` | `tool.post` con `semanticKey = out:<call_id>`; `name` y `ms` desde `openCalls` |
 | `event_msg` `token_count` con `info` | Regla de D7: con `lastTotal = null`, `usage = last_token_usage` y línea base en el total. Después, delta por componente (con un delta de 0 no hay evento; con uno negativo, `last_token_usage`, nueva línea base y warning `usage-anomaly`). Se emite como `assistant.message` sin `text`, con `usage` { `input` = input − cached, `cacheRead` = cached, `cacheCreation` = cache_write, `output`, `model` } |
 | `compacted` | `compact` |
-| `response_item` conocidos sin evento, cualquier otro subtipo de `event_msg`, `token_usage_record`, `world_state`, `inter_agent_communication_metadata` | Nada |
+| `response_item` conocidos sin evento (`reasoning`, `agent_message`, `tool_search_call`, `tool_search_output`, más los roles distintos de assistant), cualquier otro subtipo de `event_msg`, `token_usage_record`, `world_state`, `inter_agent_communication_metadata` | Nada |
 | `type` desconocido o `response_item` con subtipo desconocido | `ingest.error` |
 
 Sin `session_meta` previo, `sessionId` sale del nombre del archivo y el proyecto queda `unresolved`.
@@ -794,7 +794,8 @@ Sin `session_meta` previo, `sessionId` sale del nombre del archivo y el proyecto
 Limitaciones de F1:
 
 - Codex no emite `agent.stop` ni `tool.error`.
-- Los 9 forks sin start ordinal (0.145.0) ingieren historia heredada, sin usage.
+- Los forks sin segundo `session_meta` (los 0.145.0 y los `guardian`) no tienen historia copiada que omitir: su `subagent_history_start_ordinal` se ignora y sus líneas se ingieren completas, con su propio usage. Los 9 forks 0.145.0 sin start ordinal ingieren, en cambio, las copias de mensajes ya mencionadas (D7).
+- Codex no emite prompts hasta B7.T3: los prompts reales llegan como `response_item.message` con `role=user` / `item_completed` `UserMessage`, no como `event_msg.user_message`. Los modelos de Codex (`gpt-5.6-*`, `gpt-6-astra`, `codex-auto-review`) no tienen precio, así que su `costUsd` es 0.
 - Hay 3 copias de mensajes entre archivos (D7).
 
 ---
@@ -888,9 +889,9 @@ Ningún test lee `~/.claude`, `~/.codex` ni `~/.crow` reales: todo pasa por `loa
 
 **Fixtures que hay que crear.** Todos anonimizados con `scripts/anonymize-fixture.ts`, que usa una allowlist de claves estructurales. Cualquier otra string se reemplaza por un marcador. Los `cwd` se reescriben a `/tmp/crow-fixture/<repo>`, los timestamps se desplazan de forma consistente y se eliminan los UUID de cuenta. **Los números de usage no se tocan.**
 
-1. **`fixtures/claude/cc-2.1.281/`.** Sesión real capturada y anonimizada: principal más 5 subagentes asíncronos con sus `meta.json` y prompts en cola. Cubre el camino asíncrono real (`toolUseResult.status: "async_launched"`, `is_error` en varios subagentes, duplicados de `message.id`). **Hallazgo round 1 (ver `.claude/progress/impl_f1-b4t3-contract.md`):** la captura real no contiene ninguna línea `user`/`origin.kind: "task-notification"` — la única forma que `map-line.ts` conocía hasta entonces. **Round 2:** una inspección estructural directa del transcript de origen (solo paths/kinds, sin contenido) identificó la señal real: una línea `attachment`/`queued_command`/`commandMode: "task-notification"`, con los mismos tags `<tool-use-id>`/`<status>` en `attachment.prompt`. `map-line.ts` y el anonimizador ya soportan esta forma (§ Mapeo Claude, nota cc-2.1.281) — pero **el fixture en disco sigue anonimizado con la versión anterior del anonimizador**, así que su `attachment.prompt` sigue siendo un marcador opaco sin la correlación. `claude/contract.test.ts` ya afirma el estado objetivo (5 `agent.stop`) y falla a propósito contra el fixture desactualizado hasta que se regenere con `scripts/anonymize-fixture.ts ... --force` sobre la sesión original y se actualice el snapshot. El subagente síncrono, `compact_boundary` y el `is_error` sintético quedan cubiertos por `claude/subagents.test.ts` porque las sesiones recientes de Claude Code lanzan subagentes en modo asíncrono y ninguna capturada tuvo compactación.
-2. **`fixtures/codex/0.145.0/`.** Un principal legacy (solo `token_count`, con totales repetidos), un fork "fresco" sin start ordinal y **el fork con acumulado arrastrado**, recortados a sus primeros `token_count`.
-3. **`fixtures/codex/0.155.1/`.** Principal, un `thread_spawn` fork con `subagent_history_start_ordinal`, un `guardian` y un bloque con un `user_message` reemitido que solo difiere en `timestamp`.
+1. **`fixtures/claude/cc-2.1.281/`.** Sesión real capturada y anonimizada: principal más 5 subagentes asíncronos con sus `meta.json` y prompts en cola. Cubre el camino asíncrono real (`toolUseResult.status: "async_launched"`, `is_error` en varios subagentes, duplicados de `message.id`). **Hallazgo round 1 (ver `.claude/progress/impl_f1-b4t3-contract.md`):** la captura real no contiene ninguna línea `user`/`origin.kind: "task-notification"` — la única forma que `map-line.ts` conocía hasta entonces. **Round 2:** una inspección estructural directa del transcript de origen (solo paths/kinds, sin contenido) identificó la señal real: una línea `attachment`/`queued_command`/`commandMode: "task-notification"`, con los mismos tags `<tool-use-id>`/`<status>` en `attachment.prompt`. `map-line.ts` y el anonimizador ya soportan esta forma (§ Mapeo Claude, nota cc-2.1.281). **Estado actual:** el fixture en disco ya se regeneró con `scripts/anonymize-fixture.ts ... --force` sobre la sesión original, `attachment.prompt` lleva la correlación `<tool-use-id>`/`<status>` real, y `claude/contract.test.ts` afirma y pasa contra el estado objetivo (5 `agent.stop`). El subagente síncrono, `compact_boundary` y el `is_error` sintético quedan cubiertos por `claude/subagents.test.ts` porque las sesiones recientes de Claude Code lanzan subagentes en modo asíncrono y ninguna capturada tuvo compactación.
+2. **`fixtures/codex/0.145.0/`.** Un principal legacy (`id0`), un segundo principal (`id23`), un fork "fresco" (`id32`: primer `total == last == 15497`) y **el fork con acumulado arrastrado** (`id19`: primer total 2,338,889 contra `last` 120,130, diferencia exacta de 2,218,759), recortados a sus primeros `token_count`. Ambos forks traen `subagent_history_start_ordinal` (111 y 26) pero un único `session_meta`: la regla de historia heredada no aplica y sus `token_count` cuentan. El recorte no conserva totales repetidos.
+3. **`fixtures/codex/0.155.1/`.** Principal (`id0`), un `thread_spawn` fork con `subagent_history_start_ordinal` y dos `session_meta` (`id30`) y un `guardian` (`id70`, sin `thread_spawn`; su padre `id30` vive solo en `payload.parent_thread_id`). El bloque con `user_message` reemitido **no** está aquí: viene de `fixtures/codex/0.146.0-alpha.3.1/` (`id0`), y ni siquiera esa captura contiene una línea `event_msg.user_message` (los prompts llegan como `item_completed`/`UserMessage`); ver `.claude/progress/impl_f1-b7t2-contract.md`.
 4. **`fixtures/claude/navori-audit/`.** Copia literal.
 
 **Verificación manual (demo de F1):** dos repos con Claude y uno con Codex en vivo, el split, reiniciar sin duplicados y una sesión previa hidratada.
