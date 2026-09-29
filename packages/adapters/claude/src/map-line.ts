@@ -9,10 +9,12 @@
  */
 import type {
   CrowEventAgent,
+  CrowEventHook,
   CrowEventUsage,
   JsonValue,
   LinePos,
   LineResult,
+  MatchSpec,
   PartialCrowEvent,
   Rec,
 } from "@crow/core";
@@ -184,8 +186,18 @@ function readUsage(usageRaw: unknown, model: string | null): CrowEventUsage | nu
   };
 }
 
+/**
+ * The per-call key OTel and the transcript share (D6): `req:<requestId>`. G5a (documented, not yet
+ * confirmed by a real capture; B0.T3 will): OTel `api_request`'s `request_id` equals the
+ * transcript's `requestId`. If B0 finds another relation, this is the only place that changes.
+ */
+export function usageCallKey(requestId: string | null): string | undefined {
+  return requestId === null ? undefined : `req:${requestId}`;
+}
+
 function mapAssistant(
   message: Rec,
+  requestId: string | null,
   agentId: string | null,
   state: ClaudeState,
   ts: number,
@@ -216,7 +228,14 @@ function mapAssistant(
       .filter((b) => b.type === "text" && typeof b.text === "string")
       .map((b) => b.text as string);
     const text = textParts.length > 0 ? textParts.join("").slice(0, 8192) : undefined;
-    push({ kind: "assistant.message", ts, text, usage, usageKey });
+    push({
+      kind: "assistant.message",
+      ts,
+      text,
+      usage,
+      usageKey,
+      usageCallKey: usage !== undefined ? usageCallKey(requestId) : undefined,
+    });
   }
 
   let openCalls = state.openCalls;
@@ -331,6 +350,50 @@ function mapUser(
   return { openCalls, spawned };
 }
 
+/** The URL shape of crow's own `http` hook handler (D13 signature), anywhere inside a string. */
+const CROW_INGEST_URL = /(127\.0\.0\.1|localhost):\d+\/ingest\/hook\//;
+
+/** `true` if a hook record's `command`/`url` is one of the handlers crow installed itself (D18). */
+function isCrowHook(attachment: Rec): boolean {
+  for (const field of [attachment.command, attachment.url]) {
+    if (typeof field !== "string") continue;
+    if (field.includes("crow-ingest-hook") || CROW_INGEST_URL.test(field)) return true;
+  }
+  return false;
+}
+
+/**
+ * Transcript hook execution record (D18, R33): an `attachment` whose type is `hook_<outcome>` and
+ * that carries `hookName` and `hookEvent`. ALLOWLIST: only name, phase, `ms`, exit code, verdict
+ * (the outcome without `hook_`) and `blocking` are read; `stdout`, `stderr`, `command`, `content`
+ * and `rendered` are never touched. Returns `null` for anything that is not an execution record:
+ * `hook_additional_context` (content, not a run), records without name/event, and crow's own hooks
+ * (dropped without storing anything).
+ */
+function mapHookRecord(attachment: Rec): CrowEventHook | null {
+  const type = str(attachment.type);
+  if (type === null || !type.startsWith("hook_") || type === "hook_additional_context") {
+    return null;
+  }
+  const name = str(attachment.hookName);
+  const phase = str(attachment.hookEvent);
+  if (name === null || name === "" || phase === null || phase === "") return null;
+  if (isCrowHook(attachment)) return null;
+  const verdict = type.slice("hook_".length);
+  const exitCode = typeof attachment.exitCode === "number" ? attachment.exitCode : undefined;
+  const hook: CrowEventHook = {
+    name,
+    phase,
+    verdict,
+    // ⚠ B0: the blocking subtype's name is not in the fixture; `hook_blocking_error` is the
+    // engine's own name for it, `exitCode === 2` is the documented command-hook convention.
+    blocking: verdict === "blocking_error" || exitCode === 2,
+  };
+  if (typeof attachment.durationMs === "number") hook.ms = attachment.durationMs;
+  if (exitCode !== undefined) hook.exitCode = exitCode;
+  return hook;
+}
+
 /**
  * `type: "attachment"` line (design.md § Mapeo Claude, "cc-2.1.281"). Only one subtype carries an
  * event: `attachment.type === "queued_command"` with `attachment.commandMode ===
@@ -352,12 +415,53 @@ function mapAttachment(
 ): ClaudeState["spawned"] {
   const attachment = parsed.attachment;
   if (!isRec(attachment)) return spawned;
+  const hook = mapHookRecord(attachment);
+  if (hook !== null) {
+    push({ kind: "hook", ts, hook });
+    return spawned;
+  }
   if (attachment.type !== "queued_command" || attachment.commandMode !== "task-notification") {
     return spawned;
   }
   const prompt = str(attachment.prompt);
   if (prompt === null) return spawned;
   return stopFromNotificationText(prompt, spawned, ts, push);
+}
+
+/**
+ * Cross-lane reconciliation key of one pushed event (design.md § Claves nuevas en los mapas de
+ * línea de F1): the same logical fact gets the same key from the hook and OTel lanes (B2, B5).
+ * Events that reach the store through one lane only (`assistant.message`, `hook`, ...) get none.
+ */
+function matchFor(
+  ev: Push,
+  agentId: string | null,
+  promptId: string | null,
+): MatchSpec | undefined {
+  const who = agentId ?? "main";
+  switch (ev.kind) {
+    case "session.start":
+      return agentId === null ? { key: "session-start@main", mode: "exact" } : undefined;
+    case "agent.start":
+      return agentId === null ? undefined : { key: `agent-start:${agentId}`, mode: "exact" };
+    case "agent.stop":
+      return agentId === null ? undefined : { key: `agent-stop:${agentId}`, mode: "exact" };
+    case "tool.pre":
+      return ev.tool?.callId === undefined
+        ? undefined
+        : { key: `tool-pre:${ev.tool.callId}`, mode: "exact" };
+    case "tool.post":
+    case "tool.error":
+      return ev.tool?.callId === undefined || ev.tool.callId === "unknown"
+        ? undefined
+        : { key: `tool-post:${ev.tool.callId}`, mode: "exact" };
+    case "prompt":
+      return promptId === null ? undefined : { key: `prompt@${who}:${promptId}`, mode: "exact" };
+    case "compact":
+      return { key: `compact@${who}`, mode: "nearest", windowMs: 10 * 60_000 };
+    default:
+      return undefined;
+  }
 }
 
 /** Line-level failure: session unknown (core uses the file's), project from the state's last `cwd`. */
@@ -435,6 +539,7 @@ export function mapClaudeLine(
     }
     const result = mapAssistant(
       message,
+      str(parsed.requestId),
       agentId,
       { ...state, openCalls, seenMessageIds },
       ts,
@@ -456,14 +561,24 @@ export function mapClaudeLine(
     return { ok: false, reason: "unknown-type", detail: type, sessionId, agentId, state };
   }
 
-  const events: PartialCrowEvent[] = pushed.map((ev, index) => ({
-    sessionId,
-    agentId: ev.agentId !== undefined ? ev.agentId : agentId,
-    parentAgentId: null,
-    cwd: cwd ?? undefined,
-    semanticKey: `uuid:${uuid}:${index}`,
-    ...ev,
-  }));
+  // One `promptId` spans several `user` lines in real transcripts (fixture: a top-level
+  // `isMeta: true` reminder plus the real prompt lines), and same-lane `exact` keys keep only the
+  // first. A meta line therefore never carries the key, so it can't shadow the real prompt; it stays
+  // a key-less prompt exactly as in F1.
+  const promptId = parsed.isMeta === true ? null : str(parsed.promptId);
+  const events: PartialCrowEvent[] = pushed.map((ev, index) => {
+    const eventAgentId = ev.agentId !== undefined ? ev.agentId : agentId;
+    const match = matchFor(ev, eventAgentId, promptId);
+    return {
+      sessionId,
+      agentId: eventAgentId,
+      parentAgentId: null,
+      cwd: cwd ?? undefined,
+      semanticKey: `uuid:${uuid}:${index}`,
+      ...ev,
+      ...(match !== undefined ? { match } : {}),
+    };
+  });
 
   const nextState: ClaudeState = {
     v: state.v,

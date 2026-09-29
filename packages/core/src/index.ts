@@ -84,6 +84,8 @@ export {
   listSessionEvents,
   listSessionEventsBefore,
   listSessions,
+  OTEL_HOLD_MS,
+  promoteHeldUsage,
   stats,
   sweepIdle,
   upsertAgentMeta,

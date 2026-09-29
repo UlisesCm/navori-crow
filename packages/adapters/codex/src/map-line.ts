@@ -7,6 +7,7 @@
  * is capped (design.md § Mapeo Claude applies the same 256 bound to Codex's
  * equivalent) so a long-running thread can't grow `state_json` without bound.
  */
+import { createHash } from "node:crypto";
 import type {
   CrowEventAgent,
   CrowEventUsage,
@@ -14,6 +15,7 @@ import type {
   LinePos,
   LineResult,
   LineWarning,
+  MatchSpec,
   PartialCrowEvent,
   Rec,
 } from "@crow/core";
@@ -140,6 +142,16 @@ function dropKey(map: { [key: string]: JsonValue }, key: string): { [key: string
 type Push = Partial<Pick<PartialCrowEvent, "agentId" | "parentAgentId" | "semanticKey">> &
   Omit<PartialCrowEvent, "sessionId" | "agentId" | "parentAgentId" | "cwd">;
 
+/**
+ * The per-call key OTel and the transcript would share (D6). Codex has none: G4 found no id common
+ * to a rollout `token_count` and OTel's `response.completed`, so usage is reconciled at SESSION
+ * scope (the store marks `tu_unkeyed`). If a later B0 capture (G5a) shows a shared id, only this
+ * function changes.
+ */
+export function usageCallKey(): string | undefined {
+  return undefined;
+}
+
 /** `input_tokens`/`cached_input_tokens`/`cache_write_input_tokens`/`output_tokens` (design.md § Evidencia). */
 function readTotals(rec: Rec): TokenTotals {
   return {
@@ -199,14 +211,15 @@ function mapTokenCount(
   const last = readTotals(lastRaw);
   const model = state.model;
 
+  const usageCall = usageCallKey();
   if (state.lastTotal === null) {
-    push({ kind: "assistant.message", ts, usage: toUsage(last, model) });
+    push({ kind: "assistant.message", ts, usage: toUsage(last, model), usageCallKey: usageCall });
     return total;
   }
 
   const delta = totalsDelta(state.lastTotal, total);
   if (delta === null) {
-    push({ kind: "assistant.message", ts, usage: toUsage(last, model) });
+    push({ kind: "assistant.message", ts, usage: toUsage(last, model), usageCallKey: usageCall });
     warn({
       reason: "usage-anomaly",
       detail: "codex token_count total_token_usage regressed against the tracked baseline",
@@ -215,7 +228,7 @@ function mapTokenCount(
   }
   if (isZeroTotals(delta)) return total;
 
-  push({ kind: "assistant.message", ts, usage: toUsage(delta, model) });
+  push({ kind: "assistant.message", ts, usage: toUsage(delta, model), usageCallKey: usageCall });
   return total;
 }
 
@@ -358,6 +371,42 @@ const KNOWN_NO_EVENT_TOP_TYPES = new Set([
   "inter_agent_communication_metadata",
 ]);
 
+/**
+ * Cross-lane reconciliation key of one pushed event (design.md § Claves nuevas en los mapas de línea
+ * de F1, Codex): `call_id` for tools, `session-start@main` for the root `session_meta`, and, until
+ * G2 shows an id shared with the rollout, `nearest` with a text fingerprint for prompts.
+ */
+function matchFor(ev: Push, agentId: string | null): MatchSpec | undefined {
+  const who = agentId ?? "main";
+  switch (ev.kind) {
+    case "session.start":
+      return agentId === null ? { key: "session-start@main", mode: "exact" } : undefined;
+    case "agent.start":
+      return agentId === null ? undefined : { key: `agent-start:${agentId}`, mode: "exact" };
+    case "tool.pre":
+      return ev.tool?.callId === undefined
+        ? undefined
+        : { key: `tool-pre:${ev.tool.callId}`, mode: "exact" };
+    case "tool.post":
+      return ev.tool?.callId === undefined
+        ? undefined
+        : { key: `tool-post:${ev.tool.callId}`, mode: "exact" };
+    case "prompt":
+      return {
+        key: `prompt@${who}`,
+        mode: "nearest",
+        windowMs: 10_000,
+        ...(ev.text !== undefined
+          ? { fingerprint: createHash("sha1").update(ev.text.trim()).digest("hex") }
+          : {}),
+      };
+    case "compact":
+      return { key: `compact@${who}`, mode: "nearest", windowMs: 10 * 60_000 };
+    default:
+      return undefined;
+  }
+}
+
 /** Line-level failure carrying the state's session (`null` while it is still the "unknown" placeholder) and last `cwd`. */
 function failure(reason: "invalid-json" | "bad-shape", state: CodexState): LineResult<CodexState> {
   return {
@@ -489,13 +538,18 @@ export function mapCodexLine(
     };
   }
 
-  const events: PartialCrowEvent[] = pushed.map((ev) => ({
-    sessionId,
-    agentId: ev.agentId !== undefined ? ev.agentId : agentId,
-    parentAgentId: ev.parentAgentId !== undefined ? ev.parentAgentId : parentAgentId,
-    cwd: cwd ?? undefined,
-    ...ev,
-  }));
+  const events: PartialCrowEvent[] = pushed.map((ev) => {
+    const eventAgentId = ev.agentId !== undefined ? ev.agentId : agentId;
+    const match = matchFor(ev, eventAgentId);
+    return {
+      sessionId,
+      agentId: eventAgentId,
+      parentAgentId: ev.parentAgentId !== undefined ? ev.parentAgentId : parentAgentId,
+      cwd: cwd ?? undefined,
+      ...ev,
+      ...(match !== undefined ? { match } : {}),
+    };
+  });
 
   const nextState: CodexState = {
     v: state.v,
