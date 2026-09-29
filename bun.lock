@@ -16,6 +16,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@crow/adapter-claude": "workspace:*",
+        "@crow/adapter-codex": "workspace:*",
         "@crow/core": "workspace:*",
       },
     },
