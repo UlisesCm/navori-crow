@@ -221,6 +221,7 @@ function ensureSession(
   nativeSessionId: string,
   cwd: string | undefined,
   ts: number,
+  isActivity = true,
 ): { id: string; projectKey: string } {
   const id = compositeSessionId(engine, nativeSessionId);
   const existing = db
@@ -239,8 +240,8 @@ function ensureSession(
     );
     db.query(
       `INSERT INTO sessions (id, engine, native_id, project_key, started_at, last_event_at, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'live')`,
-    ).run(id, engine, nativeSessionId, projKey, ts, ts);
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, engine, nativeSessionId, projKey, ts, ts, isActivity ? "live" : "idle");
     return { id, projectKey: projKey };
   }
 
@@ -657,6 +658,7 @@ export function ingestBatch(
         event.sessionId,
         event.cwd,
         event.ts,
+        event.kind !== "ingest.error", // D10: an error alone never makes a new session `live`
       );
       const agentRowKey = ensureAgent(db, sessionId, event.agentId, event.parentAgentId, event.ts);
 

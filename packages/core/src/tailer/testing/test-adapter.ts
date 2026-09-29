@@ -64,10 +64,10 @@ export function makeTestAdapter(id = "test"): EngineAdapter<TestAdapterState> {
       try {
         parsed = JSON.parse(line);
       } catch {
-        return { ok: false, reason: "invalid-json", sessionId: "unknown", agentId: null, state };
+        return { ok: false, reason: "invalid-json", sessionId: null, agentId: null, state };
       }
       if (!isRec(parsed)) {
-        return { ok: false, reason: "bad-shape", sessionId: "unknown", agentId: null, state };
+        return { ok: false, reason: "bad-shape", sessionId: null, agentId: null, state };
       }
       if (parsed.forceError === "bad-shape") {
         return {

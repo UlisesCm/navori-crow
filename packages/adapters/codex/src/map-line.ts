@@ -358,6 +358,18 @@ const KNOWN_NO_EVENT_TOP_TYPES = new Set([
   "inter_agent_communication_metadata",
 ]);
 
+/** Line-level failure carrying the state's session (`null` while it is still the "unknown" placeholder) and last `cwd`. */
+function failure(reason: "invalid-json" | "bad-shape", state: CodexState): LineResult<CodexState> {
+  return {
+    ok: false,
+    reason,
+    sessionId: state.sessionId === "unknown" ? null : state.sessionId,
+    agentId: state.agentId,
+    ...(state.cwd !== null ? { cwd: state.cwd } : {}),
+    state,
+  };
+}
+
 /** `packages/adapters/codex/src/adapter.ts`'s `EngineAdapter.parseLine` — see design.md § Mapeo Codex. */
 export function mapCodexLine(
   rawLine: string,
@@ -368,22 +380,10 @@ export function mapCodexLine(
   try {
     parsed = JSON.parse(rawLine);
   } catch {
-    return {
-      ok: false,
-      reason: "invalid-json",
-      sessionId: state.sessionId,
-      agentId: state.agentId,
-      state,
-    };
+    return failure("invalid-json", state);
   }
   if (!isRec(parsed) || typeof parsed.type !== "string") {
-    return {
-      ok: false,
-      reason: "bad-shape",
-      sessionId: state.sessionId,
-      agentId: state.agentId,
-      state,
-    };
+    return failure("bad-shape", state);
   }
 
   const type = parsed.type;
@@ -417,7 +417,7 @@ export function mapCodexLine(
     if (!started) {
       const payload = parsed.payload;
       if (!isRec(payload)) {
-        return { ok: false, reason: "bad-shape", sessionId, agentId, state };
+        return { ok: false, reason: "bad-shape", sessionId, agentId, cwd: cwd ?? undefined, state };
       }
       const result = mapSessionMeta(payload, state, ts, push);
       sessionId = result.sessionId;
@@ -436,14 +436,14 @@ export function mapCodexLine(
   } else if (type === "turn_context") {
     const payload = parsed.payload;
     if (!isRec(payload)) {
-      return { ok: false, reason: "bad-shape", sessionId, agentId, state };
+      return { ok: false, reason: "bad-shape", sessionId, agentId, cwd: cwd ?? undefined, state };
     }
     model = str(payload.model) ?? model;
     cwd = str(payload.cwd) ?? cwd;
   } else if (type === "event_msg") {
     const payload = parsed.payload;
     if (!isRec(payload)) {
-      return { ok: false, reason: "bad-shape", sessionId, agentId, state };
+      return { ok: false, reason: "bad-shape", sessionId, agentId, cwd: cwd ?? undefined, state };
     }
     const subtype = str(payload.type);
     if (subtype === "item_completed") {
@@ -460,7 +460,7 @@ export function mapCodexLine(
   } else if (type === "response_item") {
     const payload = parsed.payload;
     if (!isRec(payload)) {
-      return { ok: false, reason: "bad-shape", sessionId, agentId, state };
+      return { ok: false, reason: "bad-shape", sessionId, agentId, cwd: cwd ?? undefined, state };
     }
     const result = mapResponseItem(payload, ts, openCalls, push);
     if (result === null) {
@@ -478,7 +478,15 @@ export function mapCodexLine(
   } else if (type === "compacted") {
     push({ kind: "compact", ts });
   } else if (!KNOWN_NO_EVENT_TOP_TYPES.has(type)) {
-    return { ok: false, reason: "unknown-type", detail: type, sessionId, agentId, state };
+    return {
+      ok: false,
+      reason: "unknown-type",
+      detail: type,
+      sessionId,
+      agentId,
+      cwd: cwd ?? undefined,
+      state,
+    };
   }
 
   const events: PartialCrowEvent[] = pushed.map((ev) => ({
