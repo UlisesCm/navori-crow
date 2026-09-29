@@ -4,6 +4,11 @@ import type { Database } from "bun:sqlite";
 export interface Migration {
   version: number;
   sql: string;
+  /**
+   * Columns added before `sql` runs, each only if missing (`ALTER TABLE … ADD COLUMN` has no
+   * `IF NOT EXISTS`), so a migration can be re-applied after a `PRAGMA user_version` rollback.
+   */
+  addColumns?: readonly { table: string; column: string; ddl: string }[];
 }
 
 /**
@@ -125,10 +130,43 @@ ALTER TABLE dedupe ADD COLUMN u_cache_creation INTEGER;
 ALTER TABLE dedupe ADD COLUMN u_cache_creation_1h INTEGER;
 `;
 
+/**
+ * Schema v3 (F2a design § Esquema v3), additive only: cross-lane reconciliation columns on
+ * `events` (D5), `last_prompt_at` and the OTel-usage marks on `sessions`, and the `otel_usage`
+ * ledger table (D6, used by B1.T3). Rollback: with crow stopped, `PRAGMA user_version = 2;` — F1
+ * ignores every new column and table. `tu_unkeyed` is set on sessions that already counted usage,
+ * because pre-v3 usage carries no `r:` marks (D6), so OTel never double-counts an F1 session.
+ */
+const SCHEMA_V3 = `
+CREATE INDEX IF NOT EXISTS events_by_lkey ON events(session_id, lkey) WHERE lkey IS NOT NULL;
+UPDATE sessions SET tu_unkeyed = 1
+  WHERE t_input + t_output + t_cache_read + t_cache_creation > 0;
+CREATE TABLE IF NOT EXISTS otel_usage (
+  session_id TEXT NOT NULL, key TEXT NOT NULL,
+  scope TEXT NOT NULL CHECK (scope IN ('call','session')),
+  state TEXT NOT NULL CHECK (state IN ('held','counted','dropped')),
+  hold_until INTEGER NOT NULL, ts INTEGER NOT NULL, model TEXT,
+  u_input INTEGER NOT NULL, u_output INTEGER NOT NULL, u_cache_read INTEGER NOT NULL,
+  u_cache_creation INTEGER NOT NULL, u_cache_creation_1h INTEGER NOT NULL,
+  PRIMARY KEY (session_id, key)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS otel_usage_held ON otel_usage(hold_until) WHERE state = 'held';
+`;
+
+const SCHEMA_V3_COLUMNS: NonNullable<Migration["addColumns"]> = [
+  { table: "events", column: "lkey", ddl: "TEXT" },
+  { table: "events", column: "lfp", ddl: "TEXT" },
+  { table: "events", column: "lmeta", ddl: "TEXT" },
+  { table: "sessions", column: "last_prompt_at", ddl: "INTEGER" },
+  { table: "sessions", column: "tu_keyed", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "sessions", column: "tu_unkeyed", ddl: "INTEGER NOT NULL DEFAULT 0" },
+];
+
 /** Ordered set of migrations this build knows how to apply. */
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
+  { version: 3, sql: SCHEMA_V3, addColumns: SCHEMA_V3_COLUMNS },
 ];
 
 /** Reads `PRAGMA user_version` (outside any transaction, per D2). */
@@ -164,6 +202,13 @@ export function migrate(db: Database, migrations: readonly Migration[] = MIGRATI
 
   const applyAll = db.transaction(() => {
     for (const migration of pending) {
+      for (const { table, column, ddl } of migration.addColumns ?? []) {
+        const present = db
+          .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+          .all()
+          .some((c) => c.name === column);
+        if (!present) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl};`);
+      }
       db.exec(migration.sql);
       db.exec(`PRAGMA user_version = ${migration.version};`);
     }
