@@ -1049,6 +1049,43 @@ export function listSessionEvents(
   return { events, nextAfter, hasMore };
 }
 
+/**
+ * Backward page of `GET /api/sessions/:id/events?before=|tail=1` (R27, R33): the
+ * latest `limit` events with `id < before` (`before === null` = the session's
+ * newest), returned in ascending order like the forward pages. `hasMore` means
+ * older events exist beyond the page; `nextAfter` is the page's last id (or
+ * `before` when the page is empty). An unknown `before` is `null` (409, D9),
+ * same as an unknown `after`. Served by `events_by_session(session_id, id)`.
+ */
+export function listSessionEventsBefore(
+  db: Database,
+  sessionId: string,
+  before: string | null,
+  limit: number,
+): SessionEventsPage | null {
+  if (before !== null && !hasEvent(db, before)) return null;
+
+  const rows =
+    before !== null
+      ? db
+          .query<{ id: string; body_json: string }, [string, string, number]>(
+            "SELECT id, body_json FROM events WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
+          )
+          .all(sessionId, before, limit + 1)
+      : db
+          .query<{ id: string; body_json: string }, [string, number]>(
+            "SELECT id, body_json FROM events WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+          )
+          .all(sessionId, limit + 1);
+
+  const hasMore = rows.length > limit;
+  const page = (hasMore ? rows.slice(0, limit) : rows).reverse();
+  const events = page.map((r) => JSON.parse(r.body_json) as CrowEvent);
+  const nextAfter = page.length > 0 ? page[page.length - 1]!.id : before;
+
+  return { events, nextAfter, hasMore };
+}
+
 /** Filter for {@link listSessions} (R26): `project`/`status` are `null` when unfiltered; `since` is a plain lower bound (no implicit "or live" widening — that's `listProjects`' job). */
 export interface SessionsFilter {
   project: string | null;

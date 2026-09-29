@@ -62,6 +62,7 @@ export {
   listProjects,
   listRecentEvents,
   listSessionEvents,
+  listSessionEventsBefore,
   listSessions,
   stats,
   sweepIdle,
