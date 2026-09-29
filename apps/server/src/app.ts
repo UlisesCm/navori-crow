@@ -12,11 +12,13 @@
  * listens on a database this build can't trust (D2, R2).
  */
 import type { Server } from "bun";
+import pkg from "../package.json";
 import type { Database } from "bun:sqlite";
 import {
   createUlidFactory,
   currentCursor,
   EventBus,
+  ingestEvents,
   migrate,
   openDatabase,
   realInterval,
@@ -24,10 +26,21 @@ import {
   TailerScheduler,
   ulidTime,
 } from "@crow/core";
-import type { ClockFn, CrowConfig, IntervalScheduler, TailerSchedulerOptions } from "@crow/core";
+import type {
+  BoundAdapter,
+  ClockFn,
+  CrowConfig,
+  IntervalScheduler,
+  TailerSchedulerOptions,
+} from "@crow/core";
 import { ENGINE_ADAPTERS } from "./adapters";
+import { laneStatus, startOtlpServer } from "./otlp-server";
+import type { OtlpLaneStatus, OtlpServer } from "./otlp-server";
 import { createRequestHandler } from "./server";
 import { StreamRegistry } from "./sse";
+
+/** Reported by the OTLP `/healthz` (D8). */
+const SERVER_VERSION: string = pkg.version;
 
 /** Lower than any real ULID: used as the floor when seeding a fresh factory (D9). */
 const ULID_FLOOR = "00000000000000000000000000";
@@ -67,6 +80,8 @@ export interface StartAppOptions {
   heartbeatMs?: number;
   /** `/api/stream` replay page size (D13). Default 500. */
   streamPageSize?: number;
+  /** Adapters the OTLP lane routes through. Default: the engine registry. */
+  otlpAdapters?: readonly BoundAdapter[];
 }
 
 /** What `startApp` returns: the live pieces, plus a clean, ordered shutdown. */
@@ -74,6 +89,11 @@ export interface AppHandle {
   readonly db: Database;
   readonly server: Server<unknown>;
   readonly bus: EventBus;
+  /**
+   * State of the OTLP lane (D15): `disabled`, `listening`, `port-in-use` or `error`. B2 wires it
+   * into `/api/stats.lanes` (and `crow doctor` reads it from there).
+   */
+  otlpLaneStatus(): OtlpLaneStatus;
   /**
    * Stops the sweeper timer, then the tailer (awaiting its in-flight step —
    * see `TailerScheduler.stop`), then every open `/api/stream` (and its
@@ -147,13 +167,38 @@ export async function startApp(config: CrowConfig, opts: StartAppOptions = {}): 
     opts.sweepIntervalMs ?? 30_000,
   );
 
+  // 5. OTLP lane (D8, R14, R15, R34): opt-in; a busy port never takes the rest down.
+  let otlp: OtlpServer | null = null;
+  let otlpStatus: OtlpLaneStatus = laneStatus("disabled", config.otlpPort);
+  if (config.otlpEnabled) {
+    try {
+      otlp = startOtlpServer({
+        port: config.otlpPort,
+        allowedOrigins: config.allowedOrigins,
+        adapters: opts.otlpAdapters ?? ENGINE_ADAPTERS,
+        now,
+        version: SERVER_VERSION,
+        ingest: (events) => bus.publish(ingestEvents(db, { nextId, now, idleMs }, events)),
+      });
+    } catch (err) {
+      const busy = (err as { code?: unknown }).code === "EADDRINUSE";
+      otlpStatus = laneStatus(busy ? "port-in-use" : "error", config.otlpPort);
+      // No content (D15): the port and the reason only.
+      console.warn(
+        `crow: OTLP lane not started on 127.0.0.1:${config.otlpPort} (${otlpStatus.state})`,
+      );
+    }
+  }
+
   return {
     db,
     server,
     bus,
+    otlpLaneStatus: () => otlp?.status() ?? otlpStatus,
     async stop(): Promise<void> {
       cancelSweep();
       await tailer.stop();
+      await otlp?.stop();
       streams.closeAll();
       server.stop(true);
       db.close();
