@@ -1,0 +1,37 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [{ "key": "service.name", "value": { "stringValue": "claude-code" } }]
+      },
+      "scopeSpans": [
+        {
+          "scope": { "name": "com.anthropic.claude_code.tracing" },
+          "spans": [
+            {
+              "traceId": "5b8efff798038103d269b633813fc60c",
+              "spanId": "eee19b7ec3c1b174",
+              "parentSpanId": "eee19b7ec3c1b173",
+              "name": "claude_code.hook",
+              "kind": 1,
+              "startTimeUnixNano": "1767225600000000000",
+              "endTimeUnixNano": "1767225600250000000",
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "sess-0001" } },
+                { "key": "hook_event", "value": { "stringValue": "PreToolUse" } }
+              ],
+              "status": { "code": 2, "message": "hook failed" }
+            },
+            {
+              "name": "claude_code.interaction",
+              "startTimeUnixNano": "1767225601000000000",
+              "endTimeUnixNano": "1767225602000000000",
+              "attributes": [{ "key": "session.id", "value": { "stringValue": "sess-0001" } }],
+              "status": { "code": 1 }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

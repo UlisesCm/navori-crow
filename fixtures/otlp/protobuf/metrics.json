@@ -1,0 +1,61 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [{ "key": "service.name", "value": { "stringValue": "claude-code" } }]
+      },
+      "scopeMetrics": [
+        {
+          "scope": { "name": "com.anthropic.claude_code" },
+          "metrics": [
+            {
+              "name": "claude_code.token.usage",
+              "unit": "tokens",
+              "sum": {
+                "aggregationTemporality": 1,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1767225590000000000",
+                    "timeUnixNano": "1767225600000000000",
+                    "asInt": "1234",
+                    "attributes": [
+                      { "key": "session.id", "value": { "stringValue": "sess-0001" } },
+                      { "key": "type", "value": { "stringValue": "input" } }
+                    ]
+                  },
+                  {
+                    "timeUnixNano": "1767225600000000000",
+                    "asInt": "-5",
+                    "attributes": [{ "key": "type", "value": { "stringValue": "output" } }]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "claude_code.cost.usage",
+              "gauge": {
+                "dataPoints": [{ "timeUnixNano": "1767225600000000000", "asDouble": 0.0123 }]
+              }
+            },
+            {
+              "name": "claude_code.request.duration",
+              "histogram": {
+                "aggregationTemporality": 2,
+                "dataPoints": [
+                  {
+                    "timeUnixNano": "1767225600000000000",
+                    "count": "3",
+                    "sum": 12.5,
+                    "bucketCounts": ["1", "2"],
+                    "explicitBounds": [5.0]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
