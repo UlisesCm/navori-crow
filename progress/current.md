@@ -1,6 +1,6 @@
 # Sesión actual
 
-**Estado:** done (PRs de B5.T3 y B7.T3 a main)
+**Estado:** done (B5.T3 mergeado; PR de B7.T3 a main)
 
 ## Resultado
 F1 lotes B5.T3 (e2e de latencia, reinicio e hidratación) y B7.T3 (prompts de Codex desde `item_completed` UserMessage) completados.

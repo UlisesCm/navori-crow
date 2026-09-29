@@ -1,0 +1,14 @@
+{
+  "name": "@crow/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@crow/core": "workspace:*",
+    "@crow/server": "workspace:*"
+  }
+}
