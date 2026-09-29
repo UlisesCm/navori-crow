@@ -19,6 +19,7 @@ import type {
 } from "../crow-event";
 import { costUsd as computeCostUsd } from "../pricing";
 import { projectKey as resolveProjectKey } from "../project-key";
+import { localDay } from "../time";
 import type { ClockFn } from "../ulid";
 import { weightedTokens } from "../weighted-tokens";
 
@@ -116,19 +117,6 @@ function nativeAgentIdFromRowId(rowId: string): string | null {
 /** `sessions.id`: `${engine}:${nativeSessionId}` (design.md § Esquema v1). */
 function compositeSessionId(engine: EngineId, nativeSessionId: string): string {
   return `${engine}:${nativeSessionId}`;
-}
-
-/**
- * Local calendar day (server timezone) of an epoch-ms timestamp — "today" is
- * local, per design's open question 6. Exported for `GET /api/projects`'s
- * top-level `day` field (B5.T2), which needs the same value this module uses
- * internally for `project_daily` lookups.
- */
-export function localDay(ts: number): string {
-  const d = new Date(ts);
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${d.getFullYear()}-${mm}-${dd}`;
 }
 
 /**

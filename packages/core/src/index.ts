@@ -63,7 +63,6 @@ export {
   listRecentEvents,
   listSessionEvents,
   listSessions,
-  localDay,
   stats,
   sweepIdle,
   upsertAgentMeta,
@@ -78,6 +77,7 @@ export type {
   SessionsFilter,
   StoredOffset,
 } from "./store/store";
+export { localDay, msUntilNextDay } from "./time";
 export { createUlidFactory, ulidTime } from "./ulid";
 export type { ClockFn } from "./ulid";
 export { weightedTokens } from "./weighted-tokens";
