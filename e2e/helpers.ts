@@ -36,6 +36,9 @@ export function makeSandbox(): Sandbox {
       allowedOrigins: [],
       claudeConfigDir: join(dir, "claude"),
       codexHome: join(dir, "codex"),
+      token: null,
+      otlpEnabled: false,
+      otlpPort: 4318,
     },
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
