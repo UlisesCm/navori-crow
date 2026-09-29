@@ -14,6 +14,7 @@ import {
   listProjects,
   listRecentEvents,
   listSessionEvents,
+  listSessionEventsBefore,
   listSessions,
   localDay,
   stats,
@@ -87,6 +88,12 @@ function parseAfter(url: URL): string | null | typeof INVALID {
   return ULID_PATTERN.test(raw) ? raw : INVALID;
 }
 
+function parseBefore(url: URL): string | null | typeof INVALID {
+  const raw = url.searchParams.get("before");
+  if (raw === null) return null;
+  return ULID_PATTERN.test(raw) ? raw : INVALID;
+}
+
 /** `GET /api/projects?since=` (R25, R30). */
 function handleProjects(url: URL, ctx: RestContext): Response {
   const since = parseSince(url, ctx.now() - ctx.backfillHours * 3_600_000);
@@ -132,16 +139,33 @@ function handleSessionDetail(sessionId: string, ctx: RestContext): Response {
   return Response.json(body);
 }
 
-/** `GET /api/sessions/:id/events?after=&limit=` (R27, R33). */
+/**
+ * `GET /api/sessions/:id/events?after=&limit=` (R27, R33) pages forward.
+ * `before=<id>` or `tail=1` page backward: the latest `limit` events (older
+ * than `before` when given), still in ascending order, with `hasMore` = older
+ * events exist. `after`, `before` and `tail` are mutually exclusive (400
+ * `conflicting-cursors`); an unknown `before` is 409 `unknown-cursor` like `after`.
+ */
 function handleSessionEvents(sessionId: string, url: URL, ctx: RestContext): Response {
   if (getSessionDetail(ctx.db, sessionId) === null) return jsonError(404, "not-found");
 
   const after = parseAfter(url);
   if (after === INVALID) return jsonError(400, "invalid-after");
+  const before = parseBefore(url);
+  if (before === INVALID) return jsonError(400, "invalid-before");
+  const tailRaw = url.searchParams.get("tail");
+  if (tailRaw !== null && tailRaw !== "1") return jsonError(400, "invalid-tail");
+  const tail = tailRaw === "1";
   const limit = parseLimit(url);
   if (limit === INVALID) return jsonError(400, "invalid-limit");
+  if ([after !== null, before !== null, tail].filter(Boolean).length > 1) {
+    return jsonError(400, "conflicting-cursors");
+  }
 
-  const page = listSessionEvents(ctx.db, sessionId, after, limit);
+  const page =
+    before !== null || tail
+      ? listSessionEventsBefore(ctx.db, sessionId, before, limit)
+      : listSessionEvents(ctx.db, sessionId, after, limit);
   if (page === null) return jsonError(409, "unknown-cursor"); // D9
 
   const body: SessionEventsResponse = page;

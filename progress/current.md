@@ -1,10 +1,10 @@
 # Sesión actual
 
-**Estado:** done (PR de B6.T2 a main)
+**Estado:** done (PR de deuda de F1 a main; spec de F2a en curso en `feat/f2a-spec`)
 
 ## Resultado
-F1 lote B6.T2 completado: split de 2 a 4 proyectos y detalle de sesión (timeline filtrable, árbol de agentes, panel de costo, 500 eventos con "mostrar anteriores").
+Deuda de F1 cerrada: paginación hacia atrás de eventos, tope de 5000 en vivo, hilo principal en el árbol de agentes y test del cableado del `EventSource`.
 
 ## Siguiente paso
-- Demo manual de F1 (PLAN.md §14, criterios 1–4): dos repos con Claude y uno con Codex en vivo, split, reinicio sin duplicados e hidratación.
-- Deuda: paginación descendente en `/api/sessions/:id/events` para no leer la sesión completa al abrirla; el hilo principal en el árbol de agentes.
+- Demo manual de F1 (PLAN.md §14, criterios 1–4).
+- Spec de F2a: design, challenge y tasks.

@@ -5,6 +5,7 @@
  */
 import type { AgentNode, CrowEvent, SessionDetailResponse, SessionSummary } from "@crow/core/types";
 import { applyMany, applyOne, fromSnapshot, type Cursored } from "./cursor";
+import { MAIN_AGENT } from "./feed";
 import { addUsage, emptyTotals, updateSession } from "./projects";
 
 /** What the detail view renders next to the timeline. */
@@ -133,6 +134,41 @@ export function buildAgentTree(agents: readonly AgentNode[]): AgentTreeNode[] {
   const tree = roots.sort(byStart).map((r) => build(r, 0));
   for (const a of agents) if (!seen.has(a)) tree.push(build(a, 0)); // cycle members
   return tree;
+}
+
+/**
+ * The agent tree of a session with the main thread as its root (D16). The main
+ * thread has no `agents` row, so it is synthesized from the session (id
+ * {@link MAIN_AGENT}, type `principal`, totals = session totals minus the
+ * agents', floored at 0) and every agent with a `null` parent hangs under it.
+ * Agents with an unknown parent stay as extra roots, after the main node.
+ */
+export function buildSessionTree(
+  session: SessionSummary,
+  agents: readonly AgentNode[],
+): AgentTreeNode[] {
+  const totals = { ...session.totals };
+  for (const a of agents) {
+    for (const k of Object.keys(totals) as Array<keyof typeof totals>) {
+      totals[k] = Math.max(0, totals[k] - a.totals[k]);
+    }
+  }
+  const main: AgentNode = {
+    agentId: MAIN_AGENT,
+    parentAgentId: null,
+    type: "principal",
+    description: null,
+    model: session.model,
+    status: session.status === "ended" ? "done" : "running",
+    startedAt: session.startedAt,
+    endedAt: session.endedAt,
+    lastEventAt: session.lastEventAt,
+    totals,
+  };
+  const rewired = agents.map((a) =>
+    a.parentAgentId === null ? { ...a, parentAgentId: MAIN_AGENT } : a,
+  );
+  return buildAgentTree([main, ...rewired]);
 }
 
 /** Wall-clock span of an agent up to `nowMs` while it still runs; `null` without a start. */

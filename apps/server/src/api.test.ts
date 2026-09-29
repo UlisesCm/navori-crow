@@ -176,6 +176,54 @@ describe("REST contracts (R25-R27, R33)", () => {
     });
   });
 
+  test("backward paging: tail, before, unknown before and conflicting cursors", async () => {
+    // Covers: R27, R33
+    await withTempDir(async (dir) => {
+      const now = Date.now();
+      const handle = await startApp(testConfig(dir), { now: () => now });
+      try {
+        const deps: IngestBatchDeps = {
+          nextId: createUlidFactory("00000000000000000000000000", () => now),
+          now: () => now,
+          idleMs: 5 * 60_000,
+        };
+        seedFixture({ db: handle.db, deps });
+        const base = `http://127.0.0.1:${handle.server.port}`;
+        const url = `${base}/api/sessions/claude:s1/events`;
+        type Page = { events: Array<{ id: string }>; hasMore: boolean; nextAfter: string | null };
+
+        const all = (await (await fetch(url)).json()) as Page;
+        expect(all.events).toHaveLength(2);
+        const [first, second] = all.events.map((e) => e.id) as [string, string];
+
+        const tail = (await (await fetch(`${url}?tail=1&limit=1`)).json()) as Page;
+        expect(tail.events.map((e) => e.id)).toEqual([second]);
+        expect(tail.hasMore).toBe(true);
+        expect(tail.nextAfter).toBe(second);
+
+        const older = (await (await fetch(`${url}?before=${second}&limit=1`)).json()) as Page;
+        expect(older.events.map((e) => e.id)).toEqual([first]);
+        expect(older.hasMore).toBe(false);
+
+        const wide = (await (await fetch(`${url}?tail=1&limit=500`)).json()) as Page;
+        expect(wide.events.map((e) => e.id)).toEqual([first, second]); // ascending
+        expect(wide.hasMore).toBe(false);
+
+        const unknown = await fetch(`${url}?before=00000000000000000000000000`);
+        expect(unknown.status).toBe(409);
+        expect(await unknown.json()).toEqual({ error: "unknown-cursor" });
+
+        expect((await fetch(`${url}?before=nope`)).status).toBe(400);
+        expect((await fetch(`${url}?tail=2`)).status).toBe(400);
+        const both = await fetch(`${url}?tail=1&after=${first}`);
+        expect(both.status).toBe(400);
+        expect(await both.json()).toEqual({ error: "conflicting-cursors" });
+      } finally {
+        await handle.stop();
+      }
+    });
+  });
+
   test("malformed query params return 400, unknown routes return 404", async () => {
     // Covers: R25, R26, R27
     await withTempDir(async (dir) => {

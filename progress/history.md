@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-29 19:10 — orchestrator — F1: deuda de UI y API
+- Cambios: `GET /api/sessions/:id/events` acepta `before=<id>` (los `limit` eventos más recientes con `id < before`, en orden ascendente) y `tail=1` (los más recientes de la sesión); `after`, `before` y `tail` son excluyentes (400 `conflicting-cursors`) y un `before` desconocido da 409 `unknown-cursor`. Store: `listSessionEventsBefore` sobre el índice existente `events_by_session`, sin migración. La web abre la sesión con `tail=1&limit=500` y "Mostrar anteriores" pide una página con `before`. `reduce/feed.ts` sube el tope a 5000 tras cargar anteriores en lugar de quitarlo. `buildSessionTree` sintetiza el hilo principal como raíz del árbol de agentes. `openStream` recibe el constructor de `EventSource` inyectable, con tests del cableado. `specs/f1-mvp-pasivo/design.md` actualiza la fila REST de eventos y D16.
+- Quality gate: ✅ `bun run check` verde (279 pass / 0 fail) y `bun run build` verde, Pass 2 del reviewer.
+- Notas: los totales de la sesión en la UI solo cuentan los eventos de la página final con id mayor que el cursor del snapshot; una ráfaga de más de 500 eventos entre el snapshot y la página final no se suma.
+- Commit / PR: feat/f1-deuda-ui-api
+
 ## 2026-09-29 18:40 — orchestrator — F1: lote B6.T2 (split y detalle de sesión)
 - Cambios: `apps/web` con reducers puros `reduce/feed.ts` y `reduce/session.ts` envueltos en runes (`state/split.svelte.ts`, `state/session.svelte.ts`), vistas `Split`, `FeedColumn`, `Session`, `Timeline`, `AgentTree` y `CostPanel`; `Home` selecciona de 2 a 4 proyectos y `ProjectCard` enlaza a las sesiones en vivo. `localDay` pasa a `packages/core/src/time.ts` (subpath `@crow/core/time`, sin imports) y se elimina el duplicado web. `stream.ts` reinicia el store con backoff de 1 s a 30 s cuando el `EventSource` queda cerrado, y omite un `after` vacío. `reduce/projects.ts` agrega `rollDay`, que pone en cero los totales de "hoy" al cambiar el día local. Cubre R31 y R32.
 - Quality gate: ✅ `bun run check` verde (273 pass / 0 fail) y `bun run build` verde, Pass 2 del reviewer.

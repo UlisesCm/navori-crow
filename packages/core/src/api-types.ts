@@ -90,7 +90,7 @@ export interface SessionDetailResponse {
   agents: AgentNode[];
 }
 
-/** `GET /api/sessions/:id/events?after=&limit=` */
+/** `GET /api/sessions/:id/events?after=|before=|tail=1&limit=`; with `before`/`tail`, `hasMore` means older events exist. */
 export interface SessionEventsResponse {
   events: CrowEvent[];
   nextAfter: string | null;

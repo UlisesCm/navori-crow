@@ -1,5 +1,5 @@
 import type { CrowEvent } from "@crow/core/types";
-import { ApiError, fetchSessionDetail, fetchSessionEvents } from "../api";
+import { ApiError, fetchSessionDetail, fetchSessionEventsBackward } from "../api";
 import {
   applyManyToFeed,
   applyToFeed,
@@ -11,7 +11,7 @@ import {
 import {
   applyManyToSession,
   applyToSession,
-  buildAgentTree,
+  buildSessionTree,
   sessionFromSnapshot,
   type AgentTreeNode,
   type SessionState,
@@ -21,10 +21,8 @@ import { openStream, Restarter, type StreamHandle } from "../stream";
 const PAGE_SIZE = 500;
 
 /**
- * Runes wrapper for the session detail (D16). The events endpoint only pages
- * ascending (`id > after`), so the latest window is found by paging from the
- * start and keeping the last {@link TIMELINE_WINDOW}; older events are
- * re-fetched on demand by `loadOlder`.
+ * Runes wrapper for the session detail (D16). Opening fetches only the newest
+ * page (`tail=1`); `loadOlder` pages backward with `before=<oldest held id>`.
  */
 export class SessionStore {
   private feed: FeedState | null = $state(null);
@@ -42,7 +40,11 @@ export class SessionStore {
   readonly events: CrowEvent[] = $derived(this.feed?.value.events ?? []);
   readonly hasOlder = $derived(this.feed?.value.truncated ?? false);
   readonly session = $derived(this.detail?.value.session ?? null);
-  readonly tree: AgentTreeNode[] = $derived(buildAgentTree(this.detail?.value.agents ?? []));
+  readonly tree: AgentTreeNode[] = $derived(
+    this.detail === null
+      ? []
+      : buildSessionTree(this.detail.value.session, this.detail.value.agents),
+  );
 
   /** Snapshot (detail + newest window), then stream from the last id; also the re-sync path. */
   async start(id: string): Promise<void> {
@@ -51,17 +53,11 @@ export class SessionStore {
     const gen = ++this.generation;
     try {
       const snapshot = await fetchSessionDetail(id);
-      let detail = sessionFromSnapshot(snapshot);
-      let feed = feedFromEvents([], null, TIMELINE_WINDOW);
-      let after: string | undefined;
-      for (;;) {
-        const page = await fetchSessionEvents(id, after, PAGE_SIZE);
-        if (gen !== this.generation) return;
-        feed = applyManyToFeed(feed, page.events);
-        detail = applyManyToSession(detail, page.events); // only ids > snapshot.cursor count
-        if (!page.hasMore || page.nextAfter === null) break;
-        after = page.nextAfter;
-      }
+      const page = await fetchSessionEventsBackward(id, undefined, PAGE_SIZE);
+      if (gen !== this.generation) return;
+      let feed = applyManyToFeed(feedFromEvents([], null, TIMELINE_WINDOW), page.events);
+      feed = { ...feed, value: { ...feed.value, truncated: page.hasMore } };
+      const detail = applyManyToSession(sessionFromSnapshot(snapshot), page.events); // only ids > snapshot.cursor count
       this.feed = feed;
       this.detail = detail;
       this.error = null;
@@ -87,7 +83,7 @@ export class SessionStore {
     }
   }
 
-  /** Pages from the start of the session up to the oldest held event and merges them in. */
+  /** Fetches the page right before the oldest held event and merges it in. */
   async loadOlder(): Promise<void> {
     const feed = this.feed;
     const first = feed?.value.events[0];
@@ -95,16 +91,9 @@ export class SessionStore {
     const gen = this.generation;
     this.loadingOlder = true;
     try {
-      const older: CrowEvent[] = [];
-      let after: string | undefined;
-      for (;;) {
-        const page = await fetchSessionEvents(this.id, after, PAGE_SIZE);
-        if (gen !== this.generation) return;
-        older.push(...page.events.filter((e) => e.id < first.id));
-        if (!page.hasMore || page.nextAfter === null || page.nextAfter >= first.id) break;
-        after = page.nextAfter;
-      }
-      if (this.feed !== null) this.feed = mergeOlder(this.feed, older, true);
+      const page = await fetchSessionEventsBackward(this.id, first.id, PAGE_SIZE);
+      if (gen !== this.generation) return;
+      if (this.feed !== null) this.feed = mergeOlder(this.feed, page.events, !page.hasMore);
     } catch (err) {
       this.error = err instanceof Error ? err.message : String(err);
     } finally {

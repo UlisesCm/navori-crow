@@ -6,6 +6,7 @@ import {
   applyManyToSession,
   applyToSession,
   buildAgentTree,
+  buildSessionTree,
   sessionFromSnapshot,
 } from "./session";
 
@@ -111,6 +112,22 @@ describe("agent tree", () => {
     expect(
       cyc.flatMap((n) => [n.agent.agentId, ...n.children.map((c) => c.agent.agentId)]),
     ).toEqual(["x", "y"]);
+  });
+
+  // Covers: R32
+  test("the main thread is the root: null-parent agents hang under it, unknown parents stay roots", () => {
+    const session = snapshot(id(0)).session; // totals.input = 100
+    const sub = { ...agent("a", null, 2), totals: { ...emptyTotals(), input: 30 } };
+    const tree = buildSessionTree(session, [sub, agent("b", "a", 3), agent("orphan", "ghost", 4)]);
+    expect(tree.map((n) => n.agent.agentId)).toEqual(["__main__", "orphan"]);
+    const main = tree[0]!;
+    expect(main.depth).toBe(0);
+    expect(main.agent.type).toBe("principal");
+    expect(main.agent.totals.input).toBe(70); // session minus subagents
+    expect(main.children.map((c) => [c.agent.agentId, c.depth])).toEqual([["a", 1]]);
+    expect(main.children[0]!.children.map((c) => [c.agent.agentId, c.depth])).toEqual([["b", 2]]);
+    // a session without subagents still shows the main thread
+    expect(buildSessionTree(session, []).map((n) => n.agent.type)).toEqual(["principal"]);
   });
 
   // Covers: R32

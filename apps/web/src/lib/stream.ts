@@ -38,14 +38,33 @@ export function streamUrl(o: Pick<StreamOptions, "projects" | "session" | "after
   return query === "" ? "/api/stream" : `/api/stream?${query}`;
 }
 
-export function openStream(o: StreamOptions): StreamHandle {
-  const source = new EventSource(streamUrl(o));
+/** The slice of `EventSource` this module uses; lets tests inject a fake without a DOM. */
+export interface EventSourceLike {
+  readyState: number;
+  onopen: ((ev: Event) => void) | null;
+  onerror: ((ev: Event) => void) | null;
+  onmessage: ((ev: MessageEvent<string>) => void) | null;
+  addEventListener: (type: string, listener: () => void) => void;
+  close: () => void;
+}
+
+export type EventSourceCtor = new (url: string) => EventSourceLike;
+
+/** `EventSource.CLOSED`, spelled out so the constant does not need the global. */
+const CLOSED = 2;
+
+/** Opens the stream; `Source` defaults to the browser's `EventSource`. */
+export function openStream(
+  o: StreamOptions,
+  Source: EventSourceCtor = EventSource as unknown as EventSourceCtor,
+): StreamHandle {
+  const source = new Source(streamUrl(o));
   source.onopen = () => o.onConnection?.(true);
   source.onerror = () => {
     o.onConnection?.(false); // a dropped connection is retried natively (CONNECTING)
-    if (source.readyState === EventSource.CLOSED) o.onDead?.();
+    if (source.readyState === CLOSED) o.onDead?.();
   };
-  source.onmessage = (msg: MessageEvent<string>) => {
+  source.onmessage = (msg) => {
     try {
       o.onEvent(JSON.parse(msg.data) as CrowEvent);
     } catch {

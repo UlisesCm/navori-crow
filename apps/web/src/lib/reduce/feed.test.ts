@@ -10,6 +10,7 @@ import {
   filterOptions,
   kindLabel,
   MAIN_AGENT,
+  LOADED_CEILING,
   mergeOlder,
   minCursor,
   NO_FILTER,
@@ -50,7 +51,7 @@ describe("feed window", () => {
   });
 
   // Covers: R32
-  test("older pages merge without duplicates and lift the cap when complete", () => {
+  test("older pages merge without duplicates, keep the cursor and raise the live cap", () => {
     let state = applyManyToFeed(feedFromEvents([], null, TIMELINE_WINDOW), range(1, 620));
     // first older page overlaps the window on purpose (ids 100..130)
     state = mergeOlder(state, range(100, 130), false);
@@ -61,9 +62,25 @@ describe("feed window", () => {
     expect(new Set(state.value.events.map((e) => e.id)).size).toBe(620);
     expect(state.value.truncated).toBe(false);
     expect(state.lastApplied).toBe(id(620)); // the cursor is untouched
-    // live events keep flowing and are no longer trimmed
+    // live events keep flowing without dropping what the user loaded
     state = applyToFeed(state, ev(621));
     expect(state.value.events).toHaveLength(621);
+    expect(state.value.events[0]!.id).toBe(id(1));
+  });
+
+  // Covers: R32
+  test("after loading older, the live view is bounded by the hard ceiling and re-enables 'anteriores'", () => {
+    let state = applyManyToFeed(
+      feedFromEvents([], null, TIMELINE_WINDOW),
+      range(LOADED_CEILING - 499, LOADED_CEILING),
+    );
+    state = mergeOlder(state, range(1, LOADED_CEILING - 500), true);
+    expect(state.value.events).toHaveLength(LOADED_CEILING);
+    expect(state.value.truncated).toBe(false);
+    state = applyToFeed(state, ev(LOADED_CEILING + 1)); // one live event past the ceiling
+    expect(state.value.events).toHaveLength(LOADED_CEILING);
+    expect(state.value.events[0]!.id).toBe(id(2)); // oldest dropped
+    expect(state.value.truncated).toBe(true);
   });
 
   // Covers: R32, R33
