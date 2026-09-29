@@ -195,8 +195,11 @@ describe("TailerScheduler: injectable timers and stop() (D4, D6)", () => {
   });
 
   test("stop() doesn't resolve until an in-flight drain step finishes, and no step starts after it", async () => {
-    // Covers: R6 — stop() must never let the DB close (app.ts's shutdown order)
-    // while a step is still mid-read/write against it.
+    // No R<n> tag: this proves shutdown ordering (stop() must never let the DB
+    // close — app.ts's shutdown order — while a step is still mid-read/write
+    // against it), not R6 (offset persistence and resume). No requirement in
+    // requirements.md covers graceful shutdown, so it's left untagged
+    // (B5.T2 review finding).
     await withTempDir(async (dir) => {
       const db = freshDb();
       const bus = new EventBus();
@@ -268,7 +271,8 @@ describe("TailerScheduler: injectable timers and stop() (D4, D6)", () => {
   });
 
   test("stop() neither hangs nor rejects when the in-flight step itself throws", async () => {
-    // Covers: R6
+    // No R<n> tag: proves stop()'s error handling, not R6 — see the note on
+    // the previous test (B5.T2 review finding).
     await withTempDir(async (dir) => {
       const path = join(dir, "hot.jsonl");
       writeFileSync(path, `${testLine({ sessionId: "s1", ts: NOW, text: "hello" })}\n`);
