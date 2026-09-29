@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-29 16:40 — orchestrator — F1: lote B7.T3 (prompts de Codex)
+- Cambios: `packages/adapters/codex/src/map-line.ts` emite `prompt` desde `event_msg` `item_completed` con `item.type = "UserMessage"` (≤ 8 KiB, `semanticKey = item:<item.id>:0`); los `response_item` `message` con `role=user` se descartan porque llevan el contexto inyectado en varios bloques. Se elimina `recentPrompts` del estado y `restoreCodexState` tolera estados viejos que lo traen. `codex/contract.test.ts` reemplaza el `test.todo` con los conteos por fixture y se regeneran los snapshots. `design.md` actualiza Evidencia, Mapeo Codex, D7, Limitaciones y la fila de `identity.test.ts`. Cubre R14 y R16.
+- Quality gate: ✅ `bun run check` verde (235 pass / 0 fail), Pass 2 del reviewer; receipt `f1-b7t3-prompts` firmado.
+- Notas: un prompt por turno real (0.145.0: 1 por archivo; 0.146.0-alpha.3.1: 5; 0.155.1: id0 1, id30 0, id70 1) y 0 duplicados semánticos. Ninguna captura trae `event_msg.user_message` ni un par reemitido real, así que `identity.test.ts` (e) sigue sintético y el `user_message` legado deja de mapearse (anotado en Limitaciones). El `UserMessage` de un guardian o de un fork es la instrucción inicial que inyecta el orquestador, no texto del usuario; la UI (B6) debería distinguirlo.
+- Commit / PR: feat/f1-b7t3-codex-prompts
+
 ## 2026-09-29 16:20 — orchestrator — F1: lote B5.T3 (e2e de latencia, reinicio e hidratación)
 - Cambios: workspace nuevo `e2e/` (`@crow/e2e`, mismo patrón que `scripts/`) con `helpers.ts` (directorios temporales, `startApp` real en puerto 0, líneas sintéticas de Claude y cliente SSE mínimo), `latency.test.ts`, `restart.test.ts` y `hydrate.test.ts`. El `package.json` raíz agrega `e2e` a `workspaces` y a los globs de formato. Sin cambios de código de producción. Cubre R6, R16 y R29.
 - Quality gate: ✅ `bun run check` verde dos veces (234 pass / 1 todo / 0 fail), Pass 2 del reviewer; receipt `f1-b5t3-e2e` firmado.

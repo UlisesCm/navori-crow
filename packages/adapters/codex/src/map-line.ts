@@ -3,10 +3,9 @@
  * R16). Pure: never throws, never reads the clock or the disk.
  *
  * State shape (design.md, verbatim): `{ v, sessionId, agentId, parentAgentId,
- * cwd, model, startOrdinal, historyStart, lastTotal, openCalls, recentPrompts }`.
- * `openCalls` and `recentPrompts` are capped (design.md § Mapeo Claude
- * applies the same 256/32 bounds to Codex's equivalents) so a long-running
- * thread can't grow `state_json` without bound.
+ * cwd, model, startOrdinal, historyStart, lastTotal, openCalls }`. `openCalls`
+ * is capped (design.md § Mapeo Claude applies the same 256 bound to Codex's
+ * equivalent) so a long-running thread can't grow `state_json` without bound.
  */
 import type {
   CrowEventAgent,
@@ -18,15 +17,10 @@ import type {
   PartialCrowEvent,
   Rec,
 } from "@crow/core";
-import { createHash } from "node:crypto";
 import { isRec, num, path, str } from "@crow/core";
 
 /** Cap on `CodexState.openCalls` entries (mirrors Claude's `MAX_OPEN_CALLS`, design.md § Mapeo Claude). */
 const MAX_OPEN_CALLS = 256;
-/** Cap on `CodexState.recentPrompts`, the window `user_message` dedupe checks against (design.md D7). */
-const MAX_RECENT_PROMPTS = 32;
-/** `user_message` reemissions within this window, with identical text, share the earlier `semanticKey` (design.md D7). */
-const PROMPT_DEDUPE_WINDOW_MS = 1000;
 
 /** The four components Codex's `total_token_usage`/`last_token_usage` track (design.md § Evidencia).
  * The index signature keeps it a valid {@link JsonValue} so it can sit in `CodexState.lastTotal`. */
@@ -64,8 +58,6 @@ export interface CodexState {
   lastTs: number;
   /** `callId -> { name, ts }`, open `function_call`/`custom_tool_call`s awaiting their `*_call_output`. */
   openCalls: { [callId: string]: JsonValue };
-  /** `{ fp, ts }[]`, most recent `user_message` fingerprints, for the 1000ms dedupe window (design.md D7). */
-  recentPrompts: JsonValue[];
 }
 
 /** Fresh state for a newly-seen file; `sessionId` is the filename-derived fallback from `FileMatch`. */
@@ -83,7 +75,6 @@ export function initialCodexState(sessionId: string): CodexState {
     lastTotal: null,
     lastTs: 0,
     openCalls: {},
-    recentPrompts: [],
   };
 }
 
@@ -102,7 +93,8 @@ export function restoreCodexState(json: unknown): CodexState | null {
   if (!isRec(json)) return null;
   if (typeof json.v !== "number" || typeof json.started !== "boolean") return null;
   if (typeof json.sessionId !== "string" || typeof json.lastTs !== "number") return null;
-  if (!isRec(json.openCalls) || !Array.isArray(json.recentPrompts)) return null;
+  // States persisted before B7.T3 also carry `recentPrompts`: ignored here, dropped on the next save.
+  if (!isRec(json.openCalls)) return null;
   const lastTotal = json.lastTotal === null ? null : json.lastTotal;
   if (lastTotal !== null && !isTokenTotals(lastTotal)) return null;
   const historyStart = typeof json.historyStart === "number" ? json.historyStart : null;
@@ -120,7 +112,6 @@ export function restoreCodexState(json: unknown): CodexState | null {
     lastTotal,
     lastTs: json.lastTs,
     openCalls: json.openCalls as CodexState["openCalls"],
-    recentPrompts: json.recentPrompts as JsonValue[],
   };
 }
 
@@ -284,23 +275,15 @@ function mapSessionMeta(
   return { sessionId, agentId, parentAgentId, cwd: cwd ?? state.cwd, startOrdinal };
 }
 
-/** `event_msg.user_message` (design.md § Mapeo Codex): `semanticKey = um:<sha1(text)>:<ts>`, reusing an
- * identical prompt's `ts` if one was seen in `recentPrompts` within {@link PROMPT_DEDUPE_WINDOW_MS}. */
-function mapUserMessage(
-  text: string,
-  ts: number,
-  recentPrompts: JsonValue[],
-  push: (ev: Push) => void,
-): JsonValue[] {
-  const fp = createHash("sha1").update(text).digest("hex");
-  const reused = recentPrompts.find((p) => {
-    if (!isRec(p) || p.fp !== fp) return false;
-    return Math.abs(ts - num(p.ts)) <= PROMPT_DEDUPE_WINDOW_MS;
-  });
-  const keyTs = isRec(reused) ? num(reused.ts) : ts;
-  push({ kind: "prompt", ts, text: text.slice(0, 8192), semanticKey: `um:${fp}:${keyTs}` });
-  const next = [...recentPrompts, { fp, ts } satisfies { fp: string; ts: number }];
-  return next.length > MAX_RECENT_PROMPTS ? next.slice(next.length - MAX_RECENT_PROMPTS) : next;
+/** `event_msg.item_completed` with `item.type = "UserMessage"` (design.md § Mapeo Codex): one `prompt` per
+ * real user turn, `semanticKey = item:<item.id>:0` so a re-emitted line dedupes. Text is the concatenated
+ * `content[].text` blocks, capped at 8 KiB; no `item.id` means no key (line-content dedupe only). */
+function mapUserMessageItem(item: Rec, ts: number, push: (ev: Push) => void): void {
+  const id = str(item.id);
+  const blocks = Array.isArray(item.content) ? item.content.filter(isRec) : [];
+  const parts = blocks.filter((b) => typeof b.text === "string").map((b) => b.text as string);
+  const text = parts.length > 0 ? parts.join("").slice(0, 8192) : undefined;
+  push({ kind: "prompt", ts, text, semanticKey: id !== null ? `item:${id}:0` : undefined });
 }
 
 /** `response_item` subtypes real rollouts carry that map to no event (design.md § Mapeo Codex, "conocidos sin evento"). */
@@ -367,7 +350,7 @@ function mapResponseItem(
 }
 
 /** Known top-level types that carry no mappable event (design.md § Mapeo Codex). `event_msg` subtypes
- * other than `user_message`/`token_count` also carry no event, handled inline in {@link mapCodexLine}. */
+ * other than `item_completed`/`token_count` also carry no event, handled inline in {@link mapCodexLine}. */
 const KNOWN_NO_EVENT_TOP_TYPES = new Set([
   "turn_context", // handled separately: updates model/cwd
   "token_usage_record",
@@ -428,7 +411,6 @@ export function mapCodexLine(
   let historyStart = state.historyStart;
   let lastTotal = state.lastTotal;
   let openCalls = state.openCalls;
-  let recentPrompts = state.recentPrompts;
   let started = state.started;
 
   if (type === "session_meta") {
@@ -464,12 +446,10 @@ export function mapCodexLine(
       return { ok: false, reason: "bad-shape", sessionId, agentId, state };
     }
     const subtype = str(payload.type);
-    if (subtype === "user_message") {
-      const text = str(payload.message);
-      if (text === null) {
-        return { ok: false, reason: "bad-shape", sessionId, agentId, state };
-      }
-      recentPrompts = mapUserMessage(text, ts, recentPrompts, push);
+    if (subtype === "item_completed") {
+      // Only `UserMessage` maps (prompt); other item types (AgentMessage, tools, Reasoning...) are "Nada".
+      const item = payload.item;
+      if (isRec(item) && item.type === "UserMessage") mapUserMessageItem(item, ts, push);
     } else if (subtype === "token_count") {
       const info = payload.info;
       if (isRec(info)) {
@@ -522,7 +502,6 @@ export function mapCodexLine(
     lastTotal,
     lastTs: ts,
     openCalls,
-    recentPrompts,
   };
 
   return warnings.length > 0

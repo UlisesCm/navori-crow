@@ -2,7 +2,7 @@
  * `mapCodexLine` usage cases (a)-(d) from design.md § Testing strategy
  * ("Acumulado heredado de un fork inflando tokens") plus the § Mapeo Codex
  * mapping rows: session_meta (main/subagent), `ordinal < historyStart`
- * skipping, the `user_message` dedupe window, `function_call`/`*_call_output`
+ * skipping, the `UserMessage` prompt mapping and its item-id key, `function_call`/`*_call_output`
  * pairing via `openCalls`, unknown types, and the no-`session_meta` fallback.
  *
  * Most lines are synthetic (built from the shapes documented in design.md §
@@ -82,11 +82,15 @@ function tokenCount(ts: string, ordinal: number, total: TotalsInput, last: Total
   });
 }
 
-function userMessage(ts: string, ordinal: number, text: string): string {
+/** A real-shaped `event_msg.item_completed` `UserMessage` (fixtures/codex/0.146.0-alpha.3.1, line 3). */
+function userMessage(ts: string, ordinal: number, text: string, id = "item-1"): string {
   return JSON.stringify({
     timestamp: ts,
     type: "event_msg",
-    payload: { type: "user_message", message: text },
+    payload: {
+      type: "item_completed",
+      item: { type: "UserMessage", id, content: [{ type: "text", text, text_elements: [] }] },
+    },
     ordinal,
   });
 }
@@ -455,30 +459,61 @@ describe("mapCodexLine: session_meta, threads as agents of the root, and semanti
     expect(post?.tool).toEqual({ name: "shell", callId: "call-1", ms: 1500, ok: true });
   });
 
-  test("a user_message reemitted within 1000ms with identical text reuses the earlier semanticKey", () => {
-    // Covers: R16
+  test("an item_completed UserMessage maps to a prompt keyed item:<item.id>:0, text capped at 8 KiB", () => {
+    // Covers: R14, R16
     const lines = [
       sessionMetaMain("thread-root", "/tmp/crow-fixture/repo", "2026-09-24T10:00:00.000Z"),
-      userMessage("2026-09-24T10:00:01.000Z", 1, "do the thing"),
-      userMessage("2026-09-24T10:00:01.500Z", 2, "do the thing"), // 500ms later, same text
+      userMessage("2026-09-24T10:00:01.000Z", 1, "x".repeat(9000), "item-7"),
     ];
     const { events } = runOk(lines, initialCodexState("thread-root"));
     const prompts = events.filter((e) => e.kind === "prompt");
-    expect(prompts).toHaveLength(2);
-    expect(prompts[0]!.semanticKey).toBe(prompts[1]!.semanticKey);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]!.semanticKey).toBe("item:item-7:0");
+    expect(prompts[0]!.text).toHaveLength(8192);
   });
 
-  test("a user_message with identical text more than 1000ms apart gets its own semanticKey", () => {
+  test("a re-emitted UserMessage shares its item id key; a different id (same text) does not", () => {
     // Covers: R16
     const lines = [
       sessionMetaMain("thread-root", "/tmp/crow-fixture/repo", "2026-09-24T10:00:00.000Z"),
-      userMessage("2026-09-24T10:00:01.000Z", 1, "do the thing"),
-      userMessage("2026-09-24T10:00:05.000Z", 2, "do the thing"), // 4000ms later
+      userMessage("2026-09-24T10:00:01.000Z", 1, "do the thing", "item-1"),
+      userMessage("2026-09-24T10:00:01.010Z", 2, "do the thing", "item-1"), // re-emission
+      userMessage("2026-09-24T10:00:05.000Z", 3, "do the thing", "item-2"), // a new turn, same text
     ];
     const { events } = runOk(lines, initialCodexState("thread-root"));
-    const prompts = events.filter((e) => e.kind === "prompt");
-    expect(prompts).toHaveLength(2);
-    expect(prompts[0]!.semanticKey).not.toBe(prompts[1]!.semanticKey);
+    const keys = events.filter((e) => e.kind === "prompt").map((e) => e.semanticKey);
+    expect(keys).toEqual(["item:item-1:0", "item:item-1:0", "item:item-2:0"]);
+  });
+
+  test("role=user response_items (injected context) and other item_completed types map to no prompt", () => {
+    // Covers: R14
+    const lines = [
+      sessionMetaMain("thread-root", "/tmp/crow-fixture/repo", "2026-09-24T10:00:00.000Z"),
+      responseItem("2026-09-24T10:00:01.000Z", 1, {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "injected" }],
+      }),
+      JSON.stringify({
+        timestamp: "2026-09-24T10:00:02.000Z",
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: { type: "AgentMessage", id: "item-2", content: [] },
+        },
+        ordinal: 2,
+      }),
+    ];
+    const { events } = runOk(lines, initialCodexState("thread-root"));
+    expect(events.filter((e) => e.kind === "prompt")).toHaveLength(0);
+  });
+
+  test("restoreCodexState tolerates a state persisted with the old recentPrompts field", () => {
+    // Covers: R14
+    const old = { ...initialCodexState("thread-root"), recentPrompts: [{ fp: "abc", ts: 1 }] };
+    const restored = restoreCodexState(JSON.parse(JSON.stringify(old)));
+    expect(restored).not.toBeNull();
+    expect(restored).not.toHaveProperty("recentPrompts");
   });
 });
 

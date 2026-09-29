@@ -34,6 +34,7 @@ exports[`codex contract: real 0.155.1 fixture through the real pipeline stable s
   "eventCountsByKind": {
     "agent.start": 2,
     "assistant.message": 12,
+    "prompt": 2,
     "session.start": 1,
     "tool.post": 10,
     "tool.pre": 10,
@@ -46,6 +47,7 @@ exports[`codex contract: real 0.145.0 fixture through the real pipeline mains: s
 {
   "eventCountsByKind": {
     "assistant.message": 10,
+    "prompt": 2,
     "session.start": 2,
     "tool.post": 5,
     "tool.pre": 5,

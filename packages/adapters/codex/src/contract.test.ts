@@ -101,6 +101,65 @@ function countByKind(events: CrowEvent[]): Record<string, number> {
   return out;
 }
 
+describe("codex contract: prompts across every real fixture (B7.T3)", () => {
+  /** Non-inherited `item_completed`/`UserMessage` and `role=user` `response_item` counts, from the raw file. */
+  function rawUserLines(version: keyof typeof FILES, file: string, from: number) {
+    let userMessages = 0;
+    let roleUser = 0;
+    for (const l of readFileSync(pathOf(version, file), "utf8").split("\n")) {
+      if (l.trim() === "") continue;
+      const o = JSON.parse(l);
+      if (typeof o.ordinal === "number" && o.ordinal < from) continue;
+      if (o.type === "event_msg" && o.payload?.item?.type === "UserMessage") userMessages++;
+      if (o.type === "response_item" && o.payload?.role === "user") roleUser++;
+    }
+    return { userMessages, roleUser };
+  }
+
+  // [version, file, first non-inherited ordinal (0 = none), expected prompts]
+  const CASES: [keyof typeof FILES, string, number, number][] = [
+    ["0.145.0", FILES["0.145.0"].main, 0, 1],
+    ["0.145.0", FILES["0.145.0"].carriedFork, 0, 1],
+    ["0.145.0", FILES["0.145.0"].main2, 0, 1],
+    ["0.145.0", FILES["0.145.0"].freshFork, 0, 1],
+    ["0.146.0-alpha.3.1", FILES["0.146.0-alpha.3.1"].main, 0, 5],
+    ["0.155.1", FILES["0.155.1"].main, 0, 1],
+    ["0.155.1", FILES["0.155.1"].fork, 41, 0],
+    ["0.155.1", FILES["0.155.1"].guardian, 0, 1],
+  ];
+
+  test("exactly one prompt per UserMessage, none per role=user response_item (injected context), none duplicated (R14, R16)", async () => {
+    // Covers: R14, R16
+    let roleUserSurplus = 0;
+    for (const [version, file, from, expected] of CASES) {
+      const db = freshDb();
+      const events = await ingest(db, new EventBus(), version, file);
+      const prompts = events.filter((e) => e.kind === "prompt");
+      const raw = rawUserLines(version, file, from);
+      expect(prompts).toHaveLength(expected);
+      expect(prompts).toHaveLength(raw.userMessages);
+      expect(stats(db).semanticDuplicates).toBe(0);
+      roleUserSurplus += raw.roleUser - raw.userMessages;
+    }
+    // role=user response_items outnumber the real prompts (multi-block environment/instructions context
+    // sit before them), so mapping them would overcount: that is why they are not the source.
+    expect(roleUserSurplus).toBeGreaterThan(0);
+  });
+
+  test("id30 copied history (ordinals < 41) carries role=user lines but emits no prompt (R14)", async () => {
+    // Covers: R14
+    const file = FILES["0.155.1"].fork;
+    const inheritedRoleUser = readFileSync(pathOf("0.155.1", file), "utf8")
+      .split("\n")
+      .filter((l) => l.trim() !== "")
+      .map((l) => JSON.parse(l))
+      .filter((o) => o.ordinal < 41 && o.type === "response_item" && o.payload?.role === "user");
+    expect(inheritedRoleUser.length).toBeGreaterThan(0);
+    const events = await ingest(freshDb(), new EventBus(), "0.155.1", file);
+    expect(events.filter((e) => e.kind === "prompt")).toHaveLength(0);
+  });
+});
+
 describe("codex contract: real 0.155.1 fixture through the real pipeline", () => {
   test("thread_spawn fork and guardian map to their own agentId, parent and depth (R14)", async () => {
     // Covers: R14
@@ -287,14 +346,28 @@ describe("codex contract: real 0.145.0 fixture through the real pipeline", () =>
 });
 
 describe("codex contract: real 0.146.0-alpha.3.1 fixture", () => {
-  // Moved to B7.T3 (tasks.md): fixture/design contradiction, see .claude/progress/impl_f1-b7t2-contract.md:
-  // design.md § Testing strategy (identity (e)) and "Fixtures que hay que crear" item 3 expect a real
-  // re-emitted `event_msg.user_message` pair, but NO fixture under fixtures/codex/ contains a
-  // `user_message` line at all. This capture delivers its 5 prompts as `event_msg.item_completed`
-  // (`item.type: "UserMessage"`) plus `response_item.message` role `user`, neither of which the
-  // adapter maps to a `prompt` (design: prompt = `event_msg.user_message`), so the dedupe window
-  // can't be exercised on real data.
-  test.todo("B7.T3: the re-emitted user_message block is stored once (semanticDuplicates = 1)", () => {});
+  test("its 5 UserMessage turns map to 5 distinct prompts; the paired role=user response_items add none (R14, R16)", async () => {
+    // Covers: R14, R16
+    // No fixture has a re-emitted pair (design.md D7, identity (e)): the 5 item ids are all distinct and
+    // so are the 5 anonymized texts. The real check is exactly one prompt per turn, no semantic dedupe.
+    const db = freshDb();
+    const bus = new EventBus();
+    const events = await ingest(db, bus, "0.146.0-alpha.3.1", FILES["0.146.0-alpha.3.1"].main);
+    const prompts = events.filter((e) => e.kind === "prompt");
+    expect(prompts).toHaveLength(5);
+    expect(new Set(prompts.map((e) => e.text)).size).toBe(5);
+    const itemIds = readFileSync(
+      pathOf("0.146.0-alpha.3.1", FILES["0.146.0-alpha.3.1"].main),
+      "utf8",
+    )
+      .split("\n")
+      .filter((l) => l.trim() !== "")
+      .map((l) => JSON.parse(l))
+      .filter((o) => o.payload?.item?.type === "UserMessage")
+      .map((o) => o.payload.item.id);
+    expect(new Set(itemIds).size).toBe(5); // distinct `item:<id>:0` keys
+    expect(stats(db).semanticDuplicates).toBe(0);
+  });
 
   test("ingests the whole file without invalid-json/bad-shape errors and without semantic duplicates (R14)", async () => {
     // Covers: R14
