@@ -16,6 +16,8 @@ export type {
 } from "./adapter";
 export { bindAdapter } from "./adapter";
 export { EventBus } from "./bus";
+export { IngestQueue } from "./ingest-queue";
+export type { IngestQueueOptions } from "./ingest-queue";
 export type { BusListener } from "./bus";
 export { loadConfig } from "./config";
 export type { ConfigEnv, ConfigOverrides } from "./config";
@@ -24,6 +26,9 @@ export type {
   ApiErrorResponse,
   EventsResponse,
   IngestStats,
+  LaneCounters,
+  LaneRejection,
+  LanesStatus,
   ProjectSummary,
   ProjectsResponse,
   SessionDetailResponse,
