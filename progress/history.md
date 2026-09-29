@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-29 20:10 — orchestrator — fix: atribución de `ingest.error` a su sesión y proyecto
+- Cambios: un `LineResult` fallido lleva `sessionId: string | null` y `cwd` opcional (`packages/core/src/adapter.ts`); `ingest.ts` usa `result.sessionId ?? match.sessionId` y el `cwd` del adaptador. Los adaptadores de Claude y Codex devuelven `sessionId: null` y el `cwd` del estado en sus fallas. `ensureSession` inserta como `idle` una sesión nueva cuyo único evento es un `ingest.error` (D10). Cubre R10, R15 y R17.
+- Quality gate: ✅ `bun run check` verde (281 pass / 0 fail), Pass 2 del reviewer.
+- Notas: encontrado al correr la demo de F1 sobre un sandbox con los fixtures: la línea inválida de `fixtures/claude/navori-audit` creaba un proyecto `unresolved` y una sesión `claude:unknown` en `live`.
+- Commit / PR: fix/ingest-error-atribucion
+
 ## 2026-09-29 19:10 — orchestrator — F1: deuda de UI y API
 - Cambios: `GET /api/sessions/:id/events` acepta `before=<id>` (los `limit` eventos más recientes con `id < before`, en orden ascendente) y `tail=1` (los más recientes de la sesión); `after`, `before` y `tail` son excluyentes (400 `conflicting-cursors`) y un `before` desconocido da 409 `unknown-cursor`. Store: `listSessionEventsBefore` sobre el índice existente `events_by_session`, sin migración. La web abre la sesión con `tail=1&limit=500` y "Mostrar anteriores" pide una página con `before`. `reduce/feed.ts` sube el tope a 5000 tras cargar anteriores en lugar de quitarlo. `buildSessionTree` sintetiza el hilo principal como raíz del árbol de agentes. `openStream` recibe el constructor de `EventSource` inyectable, con tests del cableado. `specs/f1-mvp-pasivo/design.md` actualiza la fila REST de eventos y D16.
 - Quality gate: ✅ `bun run check` verde (279 pass / 0 fail) y `bun run build` verde, Pass 2 del reviewer.
