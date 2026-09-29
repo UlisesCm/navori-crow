@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { CrowEvent, ProjectsResponse } from "@crow/core/types";
-import { applyToProjects, projectsFromSnapshot, sortedProjects } from "./projects";
+import { applyToProjects, projectsFromSnapshot, rollDay, sortedProjects } from "./projects";
 
 const TODAY = new Date(2026, 8, 29, 12, 0, 0).getTime();
 const YESTERDAY = TODAY - 86_400_000;
@@ -88,5 +88,21 @@ describe("applyToProjects", () => {
     );
     expect(s.value.projects["aaaaaaaaaaaa"]!.lastError?.message).toBe("boom");
     expect(sortedProjects(s.value).map((p) => p.name)).toEqual(["other", "demo"]);
+  });
+});
+
+describe("rollDay", () => {
+  // Covers: R30
+  test("resets today totals once the injected clock crosses local midnight", () => {
+    const usage = { input: 10, output: 5, cacheRead: 0, cacheCreation: 0, costUsd: 0.5 };
+    let s = applyToProjects(projectsFromSnapshot(empty), ev(1, { usage }));
+    expect(rollDay(s, TODAY)).toBe(s); // same day: untouched
+    const tomorrow = new Date(2026, 8, 30, 0, 0, 1).getTime();
+    s = rollDay(s, tomorrow);
+    expect(s.value.day).toBe("2026-09-30");
+    expect(s.value.projects["aaaaaaaaaaaa"]!.today.costUsd).toBe(0);
+    expect(s.value.projects["aaaaaaaaaaaa"]!.sessions[0]!.totals.input).toBe(10);
+    s = applyToProjects(s, ev(2, { usage, ts: tomorrow }));
+    expect(s.value.projects["aaaaaaaaaaaa"]!.today.costUsd).toBe(0.5);
   });
 });

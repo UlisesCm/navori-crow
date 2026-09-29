@@ -1,6 +1,8 @@
 <script lang="ts">
   import { router } from "./lib/router.svelte";
   import Home from "./views/Home.svelte";
+  import Session from "./views/Session.svelte";
+  import Split from "./views/Split.svelte";
 </script>
 
 <main>
@@ -10,8 +12,14 @@
 
   {#if router.current.name === "home"}
     <Home />
-  {:else if router.current.name === "split" || router.current.name === "session"}
-    <p class="muted">Esta vista llega en la siguiente tarea (B6.T2). <a href="#/">Volver al inicio</a></p>
+  {:else if router.current.name === "split"}
+    {#key router.current.keys.join(",")}
+      <Split keys={router.current.keys} />
+    {/key}
+  {:else if router.current.name === "session"}
+    {#key router.current.id}
+      <Session id={router.current.id} />
+    {/key}
   {:else}
     <p class="muted">Ruta desconocida. <a href="#/">Volver al inicio</a></p>
   {/if}
