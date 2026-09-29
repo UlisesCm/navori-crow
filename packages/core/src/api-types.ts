@@ -109,9 +109,35 @@ export interface EventsResponse {
   events: CrowEvent[];
 }
 
+/** Why a lane refused or discarded a delivery (D3, D15). */
+export type LaneRejection =
+  | "unauthorized"
+  | "unknown-engine"
+  | "too-large"
+  | "bad-request"
+  | "unsupported-media-type"
+  | "queue-overflow"
+  | "unattributable";
+
+/** In-memory counters of one engine's lane since server start (D15). */
+export interface LaneCounters {
+  lastReceivedAt: number | null;
+  lastStoredAt: number | null;
+  received: number;
+  rejected: Partial<Record<LaneRejection, number>>;
+}
+
+/** `GET /api/stats` `lanes`: only the hook lane so far (F2a B2.T2; OTLP joins in B4.T2). */
+export interface LanesStatus {
+  /** Server start, epoch ms: the counters are in-memory. */
+  since: number;
+  engines: Record<string, { hook: LaneCounters }>;
+}
+
 /** `GET /api/stats` */
 export interface StatsResponse {
   ingest: IngestStats;
+  lanes: LanesStatus;
 }
 
 /** Shape of every REST error body, including the 409 `unknown-cursor` (D9). */

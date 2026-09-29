@@ -1053,7 +1053,7 @@ Los 10 eventos de R9 con el mismo mapeo (sin `PostToolUseFailure`, `PermissionDe
 | El usuario editó una unidad de crow | `detach` la conserva y la informa; si no puede verificar, aborta | D13 |
 | Protobuf anidado de forma maliciosa | Profundidad > 32 → 400 | D9 |
 | DB v3 con un build de F1 | Rechazo (F1 D2) | § Migration |
-| Apagado | sweeper → tailer → la cola deja de aceptar (204, contado) y termina su paso → receptor OTLP → streams → HTTP → DB | `AppHandle.stop` |
+| Apagado | sweeper → tailer → la cola deja de aceptar (204, contado) y termina solo su paso en curso (lo que sigue en cola sin drenar se pierde al apagar) → receptor OTLP → streams → HTTP → DB | `AppHandle.stop` |
 
 ## Migration
 
