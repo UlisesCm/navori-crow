@@ -8,12 +8,12 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "dependencies": {
-    "@crow/core": "workspace:*"
-  },
   "scripts": {
     "build": "tsc --noEmit -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test"
+  },
+  "dependencies": {
+    "@crow/core": "workspace:*"
   }
 }

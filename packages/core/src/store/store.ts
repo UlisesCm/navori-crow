@@ -235,10 +235,13 @@ function ensureSession(
   db: Database,
   engine: EngineId,
   nativeSessionId: string,
-  cwd: string | undefined,
+  rawCwd: string | undefined,
   ts: number,
   isActivity = true,
 ): { id: string; projectKey: string } {
+  // An empty/blank cwd is a missing cwd: `realpath("")` would resolve to the server's own cwd
+  // and file the session under whatever project crow was launched from.
+  const cwd = rawCwd !== undefined && rawCwd.trim() !== "" ? rawCwd : undefined;
   const id = compositeSessionId(engine, nativeSessionId);
   const existing = db
     .query<{ project_key: string }, [string]>("SELECT project_key FROM sessions WHERE id = ?")

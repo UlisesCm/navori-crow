@@ -88,3 +88,13 @@ describe("protobuf decoder: oracle equality (protobufjs-encoded .bin)", () => {
     );
   });
 });
+
+describe("protobuf decoder: strings", () => {
+  // Covers: R14
+  test("a leading U+FEFF is content, not a BOM to strip", () => {
+    const hex = (s: string): string => Buffer.from(s).toString("hex");
+    const kv = `0a${lp(hex("k"))}12${lp(`0a${lp(hex("﻿v"))}`)}`;
+    const decoded = decodeOtlpProtobuf("logs", hexToBytes(wrap(`32${lp(kv)}`)));
+    expect(JSON.stringify(decoded)).toContain("﻿v");
+  });
+});

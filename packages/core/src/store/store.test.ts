@@ -556,6 +556,24 @@ describe("ingestBatch: sticky project (R15)", () => {
   });
 });
 
+describe("ingestBatch: blank cwd", () => {
+  // Covers: R15
+  test.each(["", "   "])("cwd %j is unresolved, never the process cwd's project", (cwd) => {
+    const db = new Database(":memory:");
+    migrate(db);
+    ingestBatch(db, makeDeps(), {
+      path: "/f",
+      inode: "1",
+      nextOffset: 1,
+      state: null,
+      events: [makePending({}, { kind: "prompt", cwd })],
+    });
+    expect(getSessionDetail(db, "claude:s1")?.session.projectKey).toBe("unresolved");
+    expect(listProjects(db, 0).map((p) => p.key)).toEqual(["unresolved"]);
+    db.close();
+  });
+});
+
 describe("hasEvent", () => {
   test("is true for a stored id and false for an unknown one", () => {
     // Covers: R4

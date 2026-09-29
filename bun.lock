@@ -18,6 +18,7 @@
         "@crow/adapter-claude": "workspace:*",
         "@crow/adapter-codex": "workspace:*",
         "@crow/core": "workspace:*",
+        "@crow/otlp": "workspace:*",
       },
     },
     "apps/web": {
