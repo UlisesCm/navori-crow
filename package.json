@@ -5,6 +5,7 @@
   "packageManager": "bun@1.4.2",
   "workspaces": ["e2e", "apps/*", "packages/*", "packages/adapters/*", "scripts"],
   "scripts": {
+    "crow": "bun packages/cli/src/main.ts",
     "dev": "bun run --filter '*' dev",
     "build": "bun run --filter '*' build",
     "lint": "oxlint .",

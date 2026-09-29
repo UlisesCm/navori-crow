@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["bun"],
+    "noEmit": true,
+    "paths": {
+      "@crow/core": ["../core/src/index.ts"],
+      "@crow/server/app": ["../../apps/server/src/app.ts"],
+      "@crow/adapter-claude": ["../adapters/claude/src/index.ts"],
+      "@crow/adapter-codex": ["../adapters/codex/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

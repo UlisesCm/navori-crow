@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./app": "./src/app.ts"
+  },
   "scripts": {
     "dev": "CROW_ALLOWED_ORIGINS=http://localhost:5173 bun run --watch src/index.ts",
     "build": "bun build src/index.ts --outdir dist --target bun",
