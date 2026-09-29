@@ -54,6 +54,17 @@
         "@crow/core": "workspace:*",
       },
     },
+    "packages/cli": {
+      "name": "@crow/cli",
+      "version": "0.0.0",
+      "bin": {
+        "crow": "src/main.ts",
+      },
+      "dependencies": {
+        "@crow/core": "workspace:*",
+        "@crow/server": "workspace:*",
+      },
+    },
     "packages/core": {
       "name": "@crow/core",
       "version": "0.0.0",
@@ -81,6 +92,8 @@
     "@crow/adapter-claude": ["@crow/adapter-claude@workspace:packages/adapters/claude"],
 
     "@crow/adapter-codex": ["@crow/adapter-codex@workspace:packages/adapters/codex"],
+
+    "@crow/cli": ["@crow/cli@workspace:packages/cli"],
 
     "@crow/core": ["@crow/core@workspace:packages/core"],
 
