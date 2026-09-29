@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-29 17:30 — orchestrator — F1: lote B8.T1 (registro de Codex y e2e multi-motor)
+- Cambios: `apps/server/src/adapters.ts` registra `@crow/adapter-codex` en `ENGINE_ADAPTERS`, con la raíz desde `config.codexHome` (`CODEX_HOME`) a través de `codexAdapter.watchRoots`; dependencia y paths de tsconfig en `apps/server` y `e2e`, y `bun.lock`. `e2e/multi-engine.test.ts`: dos repos de Claude y uno de Codex en la app en vivo. `e2e/helpers.ts` agrega líneas sintéticas de Codex modeladas sobre `fixtures/codex/0.155.1`. Cubre R14, R15 y R29.
+- Quality gate: ✅ `bun run check` verde (240 pass / 0 fail), Pass 2 del reviewer.
+- Notas: registrar Codex no expuso ningún bug. La aserción de R29 da una ventana de 2 s al más lento de los tres carriles; la corrida tomó ~1.2 s con el poll de 1 s, así que puede ser sensible en una máquina cargada.
+- Commit / PR: feat/f1-b8t1-multi-engine
+
 ## 2026-09-29 16:40 — orchestrator — F1: lote B7.T3 (prompts de Codex)
 - Cambios: `packages/adapters/codex/src/map-line.ts` emite `prompt` desde `event_msg` `item_completed` con `item.type = "UserMessage"` (≤ 8 KiB, `semanticKey = item:<item.id>:0`); los `response_item` `message` con `role=user` se descartan porque llevan el contexto inyectado en varios bloques. Se elimina `recentPrompts` del estado y `restoreCodexState` tolera estados viejos que lo traen. `codex/contract.test.ts` reemplaza el `test.todo` con los conteos por fixture y se regeneran los snapshots. `design.md` actualiza Evidencia, Mapeo Codex, D7, Limitaciones y la fila de `identity.test.ts`. Cubre R14 y R16.
 - Quality gate: ✅ `bun run check` verde (235 pass / 0 fail), Pass 2 del reviewer; receipt `f1-b7t3-prompts` firmado.

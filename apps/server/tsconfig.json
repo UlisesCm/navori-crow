@@ -5,7 +5,8 @@
     "noEmit": true,
     "paths": {
       "@crow/core": ["../../packages/core/src/index.ts"],
-      "@crow/adapter-claude": ["../../packages/adapters/claude/src/index.ts"]
+      "@crow/adapter-claude": ["../../packages/adapters/claude/src/index.ts"],
+      "@crow/adapter-codex": ["../../packages/adapters/codex/src/index.ts"]
     }
   },
   "include": ["src/**/*.ts"]
