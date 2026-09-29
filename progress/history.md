@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-29 17:40 — orchestrator — F1: lote B6.T1 (UI: router, stream y home)
+- Cambios: `apps/web` con router por hash (`lib/route.ts`, `router.svelte.ts`), `api.ts` tipado con los tipos de `@crow/core/types`, `stream.ts` (un solo `EventSource`, `reset` descarta el estado y reaplica el snapshot, reanuda con `Last-Event-ID`), reducers puros `reduce/cursor.ts` y `reduce/projects.ts` envueltos en runes (`state/projects.svelte.ts`) y las vistas Home y ProjectCard con copy en español y tema claro/oscuro. Dependencia de workspace `@crow/core` en `apps/web`, tipos de bun en su tsconfig, `lang=es` y `bun.lock`. Cubre R30 y R33.
+- Quality gate: ✅ `bun run check` verde (251 pass / 0 fail) y `bun run build` verde, Pass 2 del reviewer.
+- Notas: `localDay` queda duplicado en el reducer web porque el runtime de `@crow/core` importa `bun:sqlite`. Un hash con un escape `%` mal formado cae en not-found en lugar de dejar la app en blanco. Las rutas de split y de sesión muestran un placeholder hasta B6.T2. La API del servidor no tuvo huecos.
+- Commit / PR: feat/f1-b6t1-ui-home
+
 ## 2026-09-29 17:30 — orchestrator — F1: lote B8.T1 (registro de Codex y e2e multi-motor)
 - Cambios: `apps/server/src/adapters.ts` registra `@crow/adapter-codex` en `ENGINE_ADAPTERS`, con la raíz desde `config.codexHome` (`CODEX_HOME`) a través de `codexAdapter.watchRoots`; dependencia y paths de tsconfig en `apps/server` y `e2e`, y `bun.lock`. `e2e/multi-engine.test.ts`: dos repos de Claude y uno de Codex en la app en vivo. `e2e/helpers.ts` agrega líneas sintéticas de Codex modeladas sobre `fixtures/codex/0.155.1`. Cubre R14, R15 y R29.
 - Quality gate: ✅ `bun run check` verde (240 pass / 0 fail), Pass 2 del reviewer.
