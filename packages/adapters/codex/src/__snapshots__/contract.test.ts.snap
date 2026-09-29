@@ -1,0 +1,79 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`codex contract: real 0.155.1 fixture through the real pipeline stable summary snapshot 1`] = `
+{
+  "agents": [
+    {
+      "agentId": null,
+      "cacheRead": 115456,
+      "hasStart": true,
+      "input": 24394,
+      "output": 988,
+      "parentAgentId": null,
+      "type": null,
+    },
+    {
+      "agentId": "id30",
+      "cacheRead": 146176,
+      "hasStart": true,
+      "input": 34294,
+      "output": 773,
+      "parentAgentId": null,
+      "type": "reviewer",
+    },
+    {
+      "agentId": "id70",
+      "cacheRead": 4864,
+      "hasStart": true,
+      "input": 19406,
+      "output": 164,
+      "parentAgentId": "id30",
+      "type": "guardian",
+    },
+  ],
+  "eventCountsByKind": {
+    "agent.start": 2,
+    "assistant.message": 12,
+    "session.start": 1,
+    "tool.post": 10,
+    "tool.pre": 10,
+  },
+  "ingestErrorCountsByReason": {},
+}
+`;
+
+exports[`codex contract: real 0.145.0 fixture through the real pipeline mains: stable summary snapshot 1`] = `
+{
+  "eventCountsByKind": {
+    "assistant.message": 10,
+    "session.start": 2,
+    "tool.post": 5,
+    "tool.pre": 5,
+  },
+  "ingestErrorCountsByReason": {},
+  "sessions": [
+    [
+      {
+        "agentId": null,
+        "cacheRead": 86016,
+        "hasStart": true,
+        "input": 29609,
+        "output": 885,
+        "parentAgentId": null,
+        "type": null,
+      },
+    ],
+    [
+      {
+        "agentId": null,
+        "cacheRead": 27136,
+        "hasStart": true,
+        "input": 15641,
+        "output": 142,
+        "parentAgentId": null,
+        "type": null,
+      },
+    ],
+  ],
+}
+`;

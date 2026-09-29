@@ -144,6 +144,43 @@ describe("ingestBatch: totals", () => {
   });
 });
 
+describe("ingestBatch: a fork's carried-over accumulator (BLOCKER 1, real 0.145.0 id19 numbers)", () => {
+  test("session weightedTokens and costUsd reflect only the counted usage, never the carried total (R4, R20, R21)", () => {
+    // Covers: R4, R20, R21
+    // fixtures/codex/0.145.0 id19: the adapter counts the first token_count's last_token_usage
+    // (1395 in, 117504 cached, 1231 out) and later only deltas; it never emits the carried 2,331,377.
+    const db = freshDb();
+    ingestBatch(db, makeDeps(), {
+      path: "/f",
+      inode: "1",
+      nextOffset: 10,
+      state: null,
+      events: [
+        makePending(
+          { engine: "codex", lineHash: "c1" },
+          {
+            sessionId: "id0",
+            agentId: "id19",
+            kind: "assistant.message",
+            usage: {
+              input: 1395,
+              output: 1231,
+              cacheRead: 117_504,
+              cacheCreation: 0,
+              model: "gpt-5.6-sol",
+            },
+          },
+        ),
+      ],
+    });
+    const t = getSessionDetail(db, "codex:id0")!.session.totals;
+    expect([t.input, t.output, t.cacheRead]).toEqual([1395, 1231, 117_504]);
+    expect(t.weightedTokens).toBeCloseTo(1395 + 5 * 1231 + 0.1 * 117_504, 6);
+    expect(t.weightedTokens).toBeLessThan(2_331_377); // the carried input alone outweighs it
+    expect(t.costUsd).toBe(0); // Codex models are unpriced (R20): tokens count, cost stays unset
+  });
+});
+
 describe("ingestBatch: usage max-tracking and anomaly (R13, round 4)", () => {
   test("a repeated message.id whose usage grew counts only the positive delta, once", () => {
     // Covers: R13 — real Claude streaming: output_tokens grows across duplicate message.id lines.

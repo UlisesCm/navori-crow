@@ -3,7 +3,7 @@
  * R16). Pure: never throws, never reads the clock or the disk.
  *
  * State shape (design.md, verbatim): `{ v, sessionId, agentId, parentAgentId,
- * cwd, model, historyStart, lastTotal, openCalls, recentPrompts }`.
+ * cwd, model, startOrdinal, historyStart, lastTotal, openCalls, recentPrompts }`.
  * `openCalls` and `recentPrompts` are capped (design.md § Mapeo Claude
  * applies the same 256/32 bounds to Codex's equivalents) so a long-running
  * thread can't grow `state_json` without bound.
@@ -53,7 +53,11 @@ export interface CodexState {
   parentAgentId: string | null;
   cwd: string | null;
   model: string | null;
-  /** `subagent_history_start_ordinal`, or `null` when this file isn't a fork with heritage to skip. */
+  /** `subagent_history_start_ordinal` as read from the first `session_meta`; only a candidate until copied history is seen. */
+  startOrdinal: number | null;
+  /** The ordinal below which lines are inherited history to skip. Set from `startOrdinal` only when a second
+   * `session_meta` (the parent's copy) shows this file really carries copied history; `null` otherwise, so a
+   * fork with a single `session_meta` (fixtures 0.145.0 id19/id32, guardian id70) ingests every line. */
   historyStart: number | null;
   /** The last `total_token_usage` seen; `null` before the file's first `token_count` (D7 baseline). */
   lastTotal: TokenTotals | null;
@@ -74,6 +78,7 @@ export function initialCodexState(sessionId: string): CodexState {
     parentAgentId: null,
     cwd: null,
     model: null,
+    startOrdinal: null,
     historyStart: null,
     lastTotal: null,
     lastTs: 0,
@@ -100,6 +105,7 @@ export function restoreCodexState(json: unknown): CodexState | null {
   if (!isRec(json.openCalls) || !Array.isArray(json.recentPrompts)) return null;
   const lastTotal = json.lastTotal === null ? null : json.lastTotal;
   if (lastTotal !== null && !isTokenTotals(lastTotal)) return null;
+  const historyStart = typeof json.historyStart === "number" ? json.historyStart : null;
   return {
     v: json.v,
     started: json.started,
@@ -108,7 +114,9 @@ export function restoreCodexState(json: unknown): CodexState | null {
     parentAgentId: str(json.parentAgentId),
     cwd: str(json.cwd),
     model: str(json.model),
-    historyStart: typeof json.historyStart === "number" ? json.historyStart : null,
+    // States persisted before `startOrdinal` existed only have `historyStart`: keep it as the candidate too.
+    startOrdinal: typeof json.startOrdinal === "number" ? json.startOrdinal : historyStart,
+    historyStart,
     lastTotal,
     lastTs: json.lastTs,
     openCalls: json.openCalls as CodexState["openCalls"],
@@ -226,17 +234,17 @@ function mapSessionMeta(
   state: CodexState,
   ts: number,
   push: (ev: Push) => void,
-): Pick<CodexState, "sessionId" | "agentId" | "parentAgentId" | "cwd" | "historyStart"> {
+): Pick<CodexState, "sessionId" | "agentId" | "parentAgentId" | "cwd" | "startOrdinal"> {
   const id = str(payload.id);
   const cwd = str(payload.cwd);
   const historyStartRaw = payload.subagent_history_start_ordinal;
-  const historyStart = typeof historyStartRaw === "number" ? historyStartRaw : null;
+  const startOrdinal = typeof historyStartRaw === "number" ? historyStartRaw : null;
   const subagent = path(payload, "source", "subagent");
 
   if (subagent === undefined) {
     const sessionId = id ?? state.sessionId;
     push({ kind: "session.start", ts });
-    return { sessionId, agentId: null, parentAgentId: null, cwd: cwd ?? state.cwd, historyStart };
+    return { sessionId, agentId: null, parentAgentId: null, cwd: cwd ?? state.cwd, startOrdinal };
   }
 
   // Threads are agent records *of* the root session (task scope: they don't become separate
@@ -250,13 +258,13 @@ function mapSessionMeta(
   const otherType = isRec(subagent) ? str(subagent.other) : null;
   const description = isRec(threadSpawn) ? str(threadSpawn.agent_nickname) : null;
 
-  // FIXME(B7.T2): the exact JSON path of `parent_thread_id`/`depth` inside `thread_spawn` isn't given
-  // verbatim by design.md (only the prose evidence above); pin it against the real anonymized
-  // fixtures' `codex/contract.test.ts`. That same pass should also explain why 123 threads report a
-  // parent while only 111 are `thread_spawn` (design.md:87-89) — some `guardian` threads may carry a
-  // parent id too, which this code currently can't see (guardians have no `thread_spawn` to read it
-  // from).
-  const parentThreadIdRaw = isRec(threadSpawn) ? threadSpawn.parent_thread_id : undefined;
+  // JSON path pinned against fixtures/codex/0.155.1 (id30) and 0.145.0 (id19, id32):
+  // `payload.source.subagent.thread_spawn.{parent_thread_id,depth}`. A `guardian` has no `thread_spawn`,
+  // but fixtures/codex/0.155.1 (id70) carries its parent at the top-level `payload.parent_thread_id`
+  // (here a nested thread, not the root), so that field is the fallback.
+  const parentThreadIdRaw = isRec(threadSpawn)
+    ? (threadSpawn.parent_thread_id ?? payload.parent_thread_id)
+    : payload.parent_thread_id;
   const parentThreadId = str(parentThreadIdRaw);
   const parentAgentId =
     parentThreadId !== null && parentThreadId !== sessionId ? parentThreadId : null;
@@ -273,7 +281,7 @@ function mapSessionMeta(
   if (type !== null) agent.type = type;
   if (description !== null) agent.description = description;
   push({ kind: "agent.start", ts, agentId, parentAgentId, agent });
-  return { sessionId, agentId, parentAgentId, cwd: cwd ?? state.cwd, historyStart };
+  return { sessionId, agentId, parentAgentId, cwd: cwd ?? state.cwd, startOrdinal };
 }
 
 /** `event_msg.user_message` (design.md § Mapeo Codex): `semanticKey = um:<sha1(text)>:<ts>`, reusing an
@@ -294,6 +302,14 @@ function mapUserMessage(
   const next = [...recentPrompts, { fp, ts } satisfies { fp: string; ts: number }];
   return next.length > MAX_RECENT_PROMPTS ? next.slice(next.length - MAX_RECENT_PROMPTS) : next;
 }
+
+/** `response_item` subtypes real rollouts carry that map to no event (design.md § Mapeo Codex, "conocidos sin evento"). */
+const KNOWN_NO_EVENT_RESPONSE_ITEMS = new Set([
+  "reasoning",
+  "agent_message",
+  "tool_search_call",
+  "tool_search_output",
+]);
 
 /** `response_item` (design.md § Mapeo Codex): `message` (assistant only), `function_call`/`custom_tool_call`,
  * and `*_call_output`. Returns `null` for an unrecognized subtype (`ingest.error unknown-type`). */
@@ -346,6 +362,7 @@ function mapResponseItem(
     });
     return dropKey(openCalls, callId);
   }
+  if (subtype !== null && KNOWN_NO_EVENT_RESPONSE_ITEMS.has(subtype)) return openCalls;
   return null; // unrecognized response_item subtype
 }
 
@@ -407,6 +424,7 @@ export function mapCodexLine(
   let parentAgentId = state.parentAgentId;
   let cwd = state.cwd;
   let model = state.model;
+  let startOrdinal = state.startOrdinal;
   let historyStart = state.historyStart;
   let lastTotal = state.lastTotal;
   let openCalls = state.openCalls;
@@ -424,9 +442,13 @@ export function mapCodexLine(
       agentId = result.agentId;
       parentAgentId = result.parentAgentId;
       cwd = result.cwd;
-      historyStart = result.historyStart;
+      startOrdinal = result.startOrdinal;
       started = true;
-    } // later session_meta lines (fork copies of the parent's): design.md "Nada"
+    } else {
+      // A later `session_meta` is the parent's copy: it emits nothing, but it proves this file carries
+      // copied history, so the start ordinal now applies (fixtures 0.155.1 id30: line 2, ordinal 1).
+      historyStart = startOrdinal;
+    }
   } else if (ordinal !== null && historyStart !== null && ordinal < historyStart) {
     // Inherited history skipped via subagent_history_start_ordinal (design.md § Mapeo Codex): no event.
   } else if (type === "turn_context") {
@@ -495,6 +517,7 @@ export function mapCodexLine(
     parentAgentId,
     cwd,
     model,
+    startOrdinal,
     historyStart,
     lastTotal,
     lastTs: ts,
