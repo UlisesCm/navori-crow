@@ -33,7 +33,10 @@ export class ProtobufError extends Error {
 
 /** Nesting limit for `AnyValue` (array/kvlist recursion). Depth 1 is the outermost value. */
 export const MAX_ANY_VALUE_DEPTH = 32;
-/** Limit of `AnyValue`s decoded per request. */
+/**
+ * Limit of `AnyValue`s decoded per request. A backstop only: the receiver's body-size cap (413,
+ * D8) is the real bound on work per request.
+ */
 export const MAX_VALUES_PER_REQUEST = 1_000_000;
 
 export interface DecodeLimits {
@@ -52,7 +55,8 @@ const WIRE_FIXED64 = 1;
 const WIRE_LEN = 2;
 const WIRE_FIXED32 = 5;
 
-const utf8 = new TextDecoder("utf-8", { fatal: false });
+// ignoreBOM: a leading U+FEFF is content of the string, not an encoding mark to strip.
+const utf8 = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
 
 /** Cursor over one message's bytes. */
 class Reader {

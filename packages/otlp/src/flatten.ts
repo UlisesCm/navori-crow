@@ -188,6 +188,8 @@ function metricRecords(item: Rec, f: Frame, out: FlatOtelRecord[]): number {
         continue;
       }
       const value = point.asDouble !== undefined ? point.asDouble : intAttr(point.asInt);
+      // Documented limit: an int64 above 2^53 arrives as a string and is rounded by `Number()`;
+      // metric values are token/cost counts, orders of magnitude below that.
       const num =
         typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
       if (!Number.isFinite(num)) {
