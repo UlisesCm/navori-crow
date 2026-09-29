@@ -1,4 +1,5 @@
-import type { CrowEvent, EngineId, IngestErrorReason } from "./crow-event";
+import type { CrowEvent, CrowEventUsage, EngineId, IngestErrorReason } from "./crow-event";
+import type { FlatOtelRecord } from "./otel";
 
 /** A JSON value, used where an adapter's persisted state must stay serializable. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [k: string]: JsonValue };
@@ -18,6 +19,23 @@ export interface CrowConfig {
   allowedOrigins: string[];
   claudeConfigDir: string;
   codexHome: string;
+  /** R3: ingest token (`CROW_TOKEN`, else `$CROW_HOME/token`); `null` = no token configured. */
+  token: string | null;
+  /** R34: OTLP lane opt-in; off unless flag, `CROW_OTLP` or `config.json` enables it. */
+  otlpEnabled: boolean;
+  otlpPort: number;
+}
+
+/** How the store correlates a contribution across lanes (design.md D5). */
+export interface MatchSpec {
+  /** Session-scoped; include the agent in class keys. */
+  key: string;
+  mode: "exact" | "nearest";
+  /** "nearest" only. */
+  windowMs?: number;
+  fingerprint?: string;
+  /** One contribution per role; default = source. */
+  role?: string;
 }
 
 /**
@@ -33,7 +51,34 @@ export type PartialCrowEvent = Omit<
   usageKey?: string;
   /** D7: secondary identity, scoped to the agent/file. */
   semanticKey?: string;
+  match?: MatchSpec;
+  /** Transcript usage call key, `req:<requestId>` (D6). */
+  usageCallKey?: string;
+  /** OTel candidate usage: the store decides (D6); never counted directly. */
+  otelUsage?: CrowEventUsage;
 };
+
+/** A hook delivery, transport-agnostic. */
+export interface HookInput {
+  body: unknown;
+  receivedAt: number;
+}
+
+/** Outcome of mapping one hook payload. */
+export type HookResult =
+  | { ok: true; events: PartialCrowEvent[]; warnings?: LineWarning[] }
+  | {
+      ok: false;
+      reason: IngestErrorReason;
+      detail?: string;
+      sessionId: string | null;
+      agentId: string | null;
+    };
+
+/** Outcome of mapping one flattened OTel record. */
+export type OtelResult =
+  | { ok: true; events: PartialCrowEvent[] }
+  | { ok: false; reason: "unattributable"; detail?: string };
 
 /** Which watched file a path matched, and the identity it carries. */
 export interface FileMatch {
@@ -99,6 +144,12 @@ export interface EngineAdapter<S extends JsonValue> {
   /** Pure: never throws. Parse failures are reported via `LineResult.ok === false`. */
   parseLine(line: string, state: S, pos: LinePos): LineResult<S>;
   parseSidecar?(text: string, match: FileMatch): AgentMetaPatch | null;
+  /** Pure, stateless, transport-agnostic. */
+  fromHook?(input: HookInput): HookResult;
+  /** Signature-based ownership of an OTel record (D10). */
+  ownsOtel?(record: FlatOtelRecord): boolean;
+  /** Pure, allowlist. */
+  fromOtel?(record: FlatOtelRecord): OtelResult;
 }
 
 /** An {@link EngineAdapter} with its state type `S` erased, so a registry can hold adapters for different engines. */

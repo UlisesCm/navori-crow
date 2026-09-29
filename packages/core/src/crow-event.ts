@@ -31,6 +31,8 @@ export type EventKind =
   | "instructions.loaded" // CLAUDE.md/AGENTS.md/skill
   | "usage" // aggregated tokens/cost (OTel)
   | "api.request"
+  | "turn.end" // Stop / StopFailure (R32)
+  | "revision" // D5: corrected fact for an earlier event
   | "ingest.error"; // unparseable line / unknown format
 
 /** Tool call details attached to `tool.*` events. */
@@ -40,6 +42,9 @@ export interface CrowEventTool {
   input?: unknown;
   ok?: boolean;
   ms?: number;
+  verdict?: "allow" | "deny" | "error";
+  decisionSource?: string;
+  msSource?: "engine" | "hook-receipt" | "transcript";
 }
 
 /** Token/cost usage attached to `assistant.message` or `usage` events. */
@@ -64,6 +69,49 @@ export interface CrowEventHook {
   verdict?: string;
   ms?: number;
   reason?: string;
+  blocking?: boolean; // stamped by the adapter
+  aggregate?: boolean; // beta span summarizing several hooks
+  exitCode?: number; // transcript hook records
+}
+
+/** Permission request/decision details attached to `permission` events. */
+export interface CrowEventPermission {
+  decision?: "ask" | "allow" | "deny";
+  decisionSource?: string;
+  reason?: string;
+}
+
+/** Compaction details attached to `compact` events. */
+export interface CrowEventCompact {
+  trigger?: string;
+  startedAt?: number;
+  endedAt?: number;
+}
+
+/** Turn outcome attached to `turn.end` events (R32). */
+export interface CrowEventTurn {
+  ok: boolean;
+  category?: string;
+}
+
+/** Engine-reported numbers (OTel). NEVER summed (D6). */
+export interface CrowEventReported {
+  metric?: string;
+  byType?: Record<string, number>;
+  temporality?: "delta" | "cumulative";
+  model?: string;
+  costUsd?: number;
+  ms?: number;
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheCreation?: number;
+}
+
+/** A corrected fact replacing the event `of` (D5). */
+export interface CrowEventRevision {
+  of: string;
+  fact: CrowEvent;
 }
 
 /** Subagent lifecycle details attached to `agent.start` / `agent.stop` events. */
@@ -81,7 +129,11 @@ export type IngestErrorReason =
   | "unknown-type"
   | "bad-shape"
   | "line-too-long"
-  | "usage-anomaly";
+  | "usage-anomaly"
+  | "queue-overflow"
+  | "unattributable"
+  | "invariant"
+  | "store-error";
 
 /** Error details attached to `tool.error` / `ingest.error` events. */
 export interface CrowEventError {
@@ -116,4 +168,10 @@ export interface CrowEvent {
   cwd?: string; // the event's own cwd (R15)
   agent?: CrowEventAgent; // agent.start / agent.stop
   error?: CrowEventError; // tool.error / ingest.error
+  sources?: EventSource[];
+  permission?: CrowEventPermission;
+  compact?: CrowEventCompact;
+  turn?: CrowEventTurn;
+  reported?: CrowEventReported;
+  revision?: CrowEventRevision;
 }
