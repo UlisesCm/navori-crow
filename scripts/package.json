@@ -10,5 +10,8 @@
   "dependencies": {
     "@crow/adapter-claude": "workspace:*",
     "@crow/core": "workspace:*"
+  },
+  "devDependencies": {
+    "protobufjs": "7.5.5"
   }
 }

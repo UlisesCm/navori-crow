@@ -1,0 +1,52 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "claude-code" } },
+          { "key": "host.arch", "value": { "stringValue": "arm64" } }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": { "name": "com.anthropic.claude_code.events", "version": "2.1.281" },
+          "logRecords": [
+            {
+              "timeUnixNano": "1767225600123456789",
+              "observedTimeUnixNano": "1767225600123456999",
+              "severityText": "INFO",
+              "body": { "stringValue": "claude_code.tool_result" },
+              "attributes": [
+                { "key": "event.name", "value": { "stringValue": "tool_result" } },
+                { "key": "session.id", "value": { "stringValue": "sess-0001" } },
+                { "key": "success", "value": { "boolValue": false } },
+                { "key": "duration_ms", "value": { "intValue": "42" } },
+                { "key": "big", "value": { "intValue": "9007199254740993" } },
+                { "key": "negative", "value": { "intValue": "-7" } },
+                { "key": "ratio", "value": { "doubleValue": 0.25 } },
+                {
+                  "key": "list",
+                  "value": {
+                    "arrayValue": {
+                      "values": [{ "stringValue": "a" }, { "arrayValue": { "values": [{ "intValue": "1" }] } }]
+                    }
+                  }
+                },
+                {
+                  "key": "map",
+                  "value": { "kvlistValue": { "values": [{ "key": "k", "value": { "stringValue": "v" } }] } }
+                },
+                { "key": "blob", "value": { "bytesValue": "AAEC/w==" } }
+              ]
+            },
+            {
+              "observedTimeUnixNano": "1767225601000000000",
+              "eventName": "claude_code.api_request",
+              "attributes": [{ "key": "session.id", "value": { "stringValue": "sess-0001" } }]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
