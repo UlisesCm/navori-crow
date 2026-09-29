@@ -488,6 +488,8 @@ Para cubrir el límite:
 - **Detalle.** `GET /api/sessions/:id` y la paginación de eventos; los paginados con `id > cursor` suman al total. El stream arranca desde el último `id` paginado. Con `agent.*`, un refetch con debounce trae los metadatos de los agentes.
 - **`reset` o 409 `unknown-cursor`.** `openStream` cierra el `EventSource`, la vista vuelve a pedir su snapshot y reabre desde el cursor nuevo (D9).
 - **Sin virtualización en F1.** Tope de render de 500 con "mostrar anteriores". Tema claro y oscuro por CSS.
+- **Paginación hacia atrás del detalle.** Al abrir se pide solo `tail=1&limit=500`; "mostrar anteriores" pide `before=<id más viejo>`. Tras cargar anteriores, el tope en vivo sube a un techo duro de 5000 eventos: los eventos en vivo se agregan sin descartar lo que el usuario cargó y, pasado el techo, se descartan los más viejos y "mostrar anteriores" vuelve a estar disponible.
+- **Hilo principal en el árbol de agentes.** No tiene fila en `agents`; el cliente lo sintetiza desde la sesión como raíz (totales = los de la sesión menos los de los agentes) y cuelga de él a los agentes con `parentAgentId` nulo. Sin cambio de esquema.
 - *Reversión:* barata.
 
 ---
@@ -710,7 +712,7 @@ interface IngestStats { semanticDuplicates: number; usageAnomalies: number;
 | `GET /api/projects?since=<ms>` | `{ cursor, idleMs, day, projects: ProjectSummary[] }`. Incluye proyectos con `last_seen >= since` y sus sesiones `live` más las `idle` con `last_event_at >= since`. `since` vale por defecto `now − ventana de backfill` | R25, R30 |
 | `GET /api/sessions?project=&status=&since=&limit=` | `{ sessions: SessionSummary[] }` | R26 |
 | `GET /api/sessions/:id` | `{ cursor, idleMs, session, agents: AgentNode[] }` | R26, R32 |
-| `GET /api/sessions/:id/events?after=&limit=` | `{ events, nextAfter, hasMore }`. Si el `after` no existe, 409 | R27, R33 |
+| `GET /api/sessions/:id/events?after=&limit=` | `{ events, nextAfter, hasMore }`. Si el `after` no existe, 409. Paginación hacia atrás: `before=<id>` (los `limit` eventos inmediatamente anteriores) o `tail=1` (los últimos `limit`); ambos devuelven orden ascendente y `hasMore` significa "existen eventos más viejos". `after`, `before` y `tail` son excluyentes (400 `conflicting-cursors`); un `before` inexistente es 409 `unknown-cursor`, igual que `after`. Usa el índice `events_by_session(session_id, id)`, sin migración | R27, R33 |
 | `GET /api/events?project=&limit=` (**adición**) | `{ cursor, events }` con los últimos por `(ts desc, id desc)` | R31, R33 |
 | `GET /api/stats` (**adición**) | `{ ingest: IngestStats }` | R10, R13, R16 (observabilidad) |
 
