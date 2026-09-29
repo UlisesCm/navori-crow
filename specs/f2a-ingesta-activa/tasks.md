@@ -27,7 +27,7 @@ Lotes de 1–3 tareas; cada tarea declara los `R<n>` que cubre y sus tests (todo
 ## B4 · receptor OTLP (depende de B1)
 
 - [x] **B4.T1** (R14, R16) — `packages/otlp`: decodificador protobuf propio con tope de profundidad 32, vectores a mano y oráculo `protobufjs` solo en `scripts`; aplanado portado de `collect.ts` (`timeUnixNano` como número y como string). · tests: `packages/otlp/src/protobuf.test.ts`, `packages/otlp/src/flatten.test.ts`.
-- [ ] **B4.T2** (R14, R15, R16, R17, R34) — `otlp-server.ts` en `CROW_OTLP_PORT`, opt-in, JSON/protobuf/gzip con respuesta OTLP/HTTP en camelCase, 400/405/413/415/503, puerto ocupado sin tumbar el resto, ruteo sin `service.name` y `ingest.error` por episodio. · tests: `otlp-server.test.ts`, `config.test.ts`.
+- [x] **B4.T2** (R14, R15, R16, R17, R34) — `otlp-server.ts` en `CROW_OTLP_PORT`, opt-in, JSON/protobuf/gzip con respuesta OTLP/HTTP en camelCase, 400/405/413/415/503, puerto ocupado sin tumbar el resto, ruteo sin `service.name` y `ingest.error` por episodio. · tests: `otlp-server.test.ts`, `config.test.ts`.
 
 ## B5 · mapas OTel (depende de B3 y B4)
 
