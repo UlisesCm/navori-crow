@@ -17,6 +17,7 @@ import {
   createUlidFactory,
   currentCursor,
   EventBus,
+  IngestQueue,
   migrate,
   openDatabase,
   realInterval,
@@ -26,7 +27,8 @@ import {
 } from "@crow/core";
 import type { ClockFn, CrowConfig, IntervalScheduler, TailerSchedulerOptions } from "@crow/core";
 import { ENGINE_ADAPTERS } from "./adapters";
-import { createRequestHandler } from "./server";
+import { LaneMonitor } from "./lanes";
+import { createRequestHandler, MAX_REQUEST_BODY_BYTES } from "./server";
 import { StreamRegistry } from "./sse";
 
 /** Lower than any real ULID: used as the floor when seeding a fresh factory (D9). */
@@ -105,20 +107,44 @@ export async function startApp(config: CrowConfig, opts: StartAppOptions = {}): 
   const bus = new EventBus();
   const scheduleIntervalFn = opts.scheduleInterval ?? realInterval;
   const streams = new StreamRegistry();
+
+  // --- hook lane (F2a B2): one queue, one drainer; stopped before the HTTP server and the DB ---
+  const lanes = new LaneMonitor(
+    ENGINE_ADAPTERS.map((adapter) => adapter.id),
+    now,
+  );
+  const queue = new IngestQueue({
+    db,
+    bus,
+    nextId,
+    now,
+    idleMs,
+    adapters: ENGINE_ADAPTERS,
+    onDrop: (engine) => lanes.hookRejected(engine, "queue-overflow"),
+    onStored: (engine) => lanes.hookStored(engine),
+  });
+  // --- end hook lane ---
+
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: config.crowPort,
-    fetch: createRequestHandler(config.allowedOrigins, {
-      db,
-      bus,
-      now,
-      idleMinutes: config.idleMinutes,
-      backfillHours: config.backfillHours,
-      scheduleInterval: scheduleIntervalFn,
-      registry: streams,
-      heartbeatMs: opts.heartbeatMs,
-      streamPageSize: opts.streamPageSize,
-    }),
+    maxRequestBodySize: MAX_REQUEST_BODY_BYTES,
+    fetch: createRequestHandler(
+      config.allowedOrigins,
+      {
+        db,
+        bus,
+        now,
+        idleMinutes: config.idleMinutes,
+        backfillHours: config.backfillHours,
+        scheduleInterval: scheduleIntervalFn,
+        registry: streams,
+        heartbeatMs: opts.heartbeatMs,
+        streamPageSize: opts.streamPageSize,
+        lanes: () => lanes.snapshot(),
+      },
+      { adapters: ENGINE_ADAPTERS, queue, monitor: lanes, token: config.token },
+    ),
   });
 
   // 4. Start the tailer (with the engine registry) and the periodic sweeper.
@@ -154,6 +180,7 @@ export async function startApp(config: CrowConfig, opts: StartAppOptions = {}): 
     async stop(): Promise<void> {
       cancelSweep();
       await tailer.stop();
+      await queue.stop(); // stop accepting hooks (204, counted) and finish the step in flight
       streams.closeAll();
       server.stop(true);
       db.close();

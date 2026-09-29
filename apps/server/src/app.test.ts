@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "@crow/core";
-import type { CrowConfig } from "@crow/core";
+import type { CrowConfig, StatsResponse } from "@crow/core";
 import { startApp } from "./app";
 
 function withTempDir(fn: (dir: string) => Promise<void> | void) {
@@ -78,6 +78,37 @@ describe("startApp + handleRequest: guard and shutdown (R2, R28)", () => {
       await expect(fetch(`http://127.0.0.1:${port}/healthz`)).rejects.toThrow();
       // The DB is closed: any further query throws.
       expect(() => handle.db.query("SELECT 1;").get()).toThrow();
+    });
+  });
+});
+
+describe("startApp: hook lane wiring (F2a B2)", () => {
+  test("/api/stats carries lanes and an engine without fromHook answers 404 on /ingest/hook", async () => {
+    // Covers: R2, R28
+    await withTempDir(async (dir) => {
+      const handle = await startApp(testConfig(dir));
+      try {
+        const base = `http://127.0.0.1:${handle.server.port}`;
+        const res = await fetch(`${base}/ingest/hook/claude`, { method: "POST", body: "{}" });
+        expect(res.status).toBe(404);
+        const stats = (await (await fetch(`${base}/api/stats`)).json()) as StatsResponse;
+        expect(stats.lanes.engines.claude?.hook.rejected["unknown-engine"]).toBe(1);
+      } finally {
+        await handle.stop();
+      }
+    });
+  });
+
+  test("a configured token guards /ingest/* through the running server", async () => {
+    // Covers: R3
+    await withTempDir(async (dir) => {
+      const handle = await startApp(testConfig(dir, { token: "tok" }));
+      try {
+        const url = `http://127.0.0.1:${handle.server.port}/ingest/hook/claude`;
+        expect((await fetch(url, { method: "POST", body: "{}" })).status).toBe(401);
+      } finally {
+        await handle.stop();
+      }
     });
   });
 });
