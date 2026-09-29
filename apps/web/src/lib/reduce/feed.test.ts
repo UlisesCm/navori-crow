@@ -5,10 +5,13 @@ import {
   applyToColumns,
   applyToFeed,
   COLUMN_WINDOW,
+  describeEvent,
   feedFromEvents,
   type FeedState,
   filterEvents,
   filterOptions,
+  isBlockingHook,
+  isPainted,
   kindLabel,
   MAIN_AGENT,
   LOADED_CEILING,
@@ -209,5 +212,84 @@ describe("revision rows (D5, D16)", () => {
     const next = applyToColumns(cols, revise(2, 1, { tool: { name: "Bash", ok: true } }));
     expect(next["aaaaaaaaaaaa"]!.value.events).toHaveLength(1);
     expect(next["aaaaaaaaaaaa"]!.value.events[0]!.tool?.ok).toBe(true);
+  });
+});
+
+describe("describeEvent for the F2a kinds (D16)", () => {
+  // Covers: R29
+  test("hook shows name, phase, verdict, duration and a blocking mark", () => {
+    const h = ev(1, {
+      kind: "hook",
+      hook: { name: "guard", phase: "PreToolUse", verdict: "deny", ms: 850, blocking: true },
+    });
+    expect(describeEvent(h)).toBe("guard · PreToolUse · deny · 850 ms · bloqueante");
+    expect(isBlockingHook(h)).toBe(true);
+    const ok = ev(2, {
+      kind: "hook",
+      hook: { name: "fmt", phase: "PostToolUse", verdict: "allow" },
+    });
+    expect(describeEvent(ok)).toBe("fmt · PostToolUse · allow");
+    expect(isBlockingHook(ok)).toBe(false);
+  });
+
+  // Covers: R29
+  test("permission shows the request, the decision and who decided", () => {
+    const p = ev(1, {
+      kind: "permission",
+      tool: { name: "Bash" },
+      permission: { decision: "deny", decisionSource: "user" },
+    });
+    expect(describeEvent(p)).toBe("Bash · Denegado · por user");
+    expect(describeEvent(ev(2, { kind: "permission", tool: { name: "Read" } }))).toBe(
+      "Read · Solicitud",
+    );
+  });
+
+  // Covers: R32
+  test("turn.end distinguishes a normal end from a failure with its category", () => {
+    expect(describeEvent(ev(1, { kind: "turn.end", turn: { ok: true } }))).toBe("Fin de turno");
+    expect(
+      describeEvent(ev(2, { kind: "turn.end", turn: { ok: false, category: "rate_limit" } })),
+    ).toBe("Turno fallido: rate_limit");
+    expect(describeEvent(ev(3, { kind: "turn.end", turn: { ok: false } }))).toBe("Turno fallido");
+  });
+
+  // Covers: R29
+  test("compact shows state and duration; api.request shows model, latency and cost", () => {
+    const c = ev(1, {
+      kind: "compact",
+      compact: { trigger: "auto", startedAt: 1_000, endedAt: 3_000 },
+    });
+    expect(describeEvent(c)).toBe("auto · terminada · 2 s");
+    expect(describeEvent(ev(2, { kind: "compact", compact: { trigger: "manual" } }))).toBe(
+      "manual · en curso",
+    );
+    const r = ev(3, { kind: "api.request", reported: { model: "opus", ms: 420, costUsd: 0.5 } });
+    expect(describeEvent(r)).toContain("opus · 420 ms · ");
+  });
+
+  // Covers: R29, R32
+  test("usage and revision are not painted and the kind filter lists the new kinds", () => {
+    const events = [
+      ev(1, { kind: "hook", hook: { name: "g", phase: "Pre" } }),
+      ev(2, { kind: "turn.end", turn: { ok: true } }),
+      ev(3, { kind: "usage" }),
+    ];
+    expect(isPainted(events[2]!)).toBe(false);
+    expect(filterEvents(events, NO_FILTER).map((e) => e.kind)).toEqual(["hook", "turn.end"]);
+    expect(filterOptions(events).kinds).toEqual(["hook", "turn.end"]);
+    expect(filterEvents(events, { ...NO_FILTER, kind: "hook" })).toHaveLength(1);
+  });
+
+  // Covers: R11, R13
+  test("a revision changes the shown fact in place and adds no row", () => {
+    const base = ev(1, { kind: "tool.post", tool: { name: "Bash" } });
+    const rev = ev(2, {
+      kind: "revision",
+      revision: { of: base.id, fact: { ...base, tool: { name: "Bash", verdict: "deny" } } },
+    });
+    const state = applyManyToFeed(feedFromEvents([], null, null), [base, rev]);
+    expect(state.value.events).toHaveLength(1);
+    expect(state.value.events[0]!.tool?.verdict).toBe("deny");
   });
 });

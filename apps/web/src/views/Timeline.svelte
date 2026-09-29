@@ -4,6 +4,7 @@
     describeEvent,
     filterEvents,
     filterOptions,
+    isBlockingHook,
     kindLabel,
     MAIN_AGENT,
     promptOrigin,
@@ -83,6 +84,7 @@
       {#each visible as e (e.id)}
         <li
           class:error={e.kind === "tool.error" || e.kind === "ingest.error"}
+          class:blocking={isBlockingHook(e)}
           class:delegated={promptOrigin(e) === "parent-agent"}
         >
           <span class="time">{formatTime(e.ts)}</span>
@@ -137,7 +139,8 @@
   .delegated .kind {
     color: var(--accent);
   }
-  .error {
+  .error,
+  .blocking {
     color: var(--error);
   }
   .muted {
