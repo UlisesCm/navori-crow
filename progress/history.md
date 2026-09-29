@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-29 20:15 — orchestrator — fix: detalle de sesión con id codificado en la URL
+- Cambios: `apps/server/src/api.ts` decodifica una sola vez el `:id` de `/api/sessions/:id` y `/api/sessions/:id/events` (`decodeSessionId`); un escape mal formado da 400 `invalid-id` y los ids con `:` literal siguen funcionando. `api.test.ts` cubre ids codificados, literales, desconocidos y mal formados. `e2e/session-url.test.ts` llama a los clientes reales de la web (`fetchSessionDetail`, `fetchSessionEventsBackward`) contra un servidor real. Cubre R26, R27 y R32.
+- Quality gate: ✅ `bun run check` verde (281 pass / 0 fail) y `bun run build` verde, Pass 2 del reviewer.
+- Notas: encontrado al correr la demo de F1: la web pide `/api/sessions/${encodeURIComponent(id)}` y los ids son `engine:nativeId`, así que el detalle de sesión daba 404 en la UI real. Los tests del servidor usaban ids literales y los de la web no llegaban al servidor.
+- Commit / PR: fix/session-id-codificado
+
 ## 2026-09-29 19:10 — orchestrator — F1: deuda de UI y API
 - Cambios: `GET /api/sessions/:id/events` acepta `before=<id>` (los `limit` eventos más recientes con `id < before`, en orden ascendente) y `tail=1` (los más recientes de la sesión); `after`, `before` y `tail` son excluyentes (400 `conflicting-cursors`) y un `before` desconocido da 409 `unknown-cursor`. Store: `listSessionEventsBefore` sobre el índice existente `events_by_session`, sin migración. La web abre la sesión con `tail=1&limit=500` y "Mostrar anteriores" pide una página con `before`. `reduce/feed.ts` sube el tope a 5000 tras cargar anteriores en lugar de quitarlo. `buildSessionTree` sintetiza el hilo principal como raíz del árbol de agentes. `openStream` recibe el constructor de `EventSource` inyectable, con tests del cableado. `specs/f1-mvp-pasivo/design.md` actualiza la fila REST de eventos y D16.
 - Quality gate: ✅ `bun run check` verde (279 pass / 0 fail) y `bun run build` verde, Pass 2 del reviewer.
