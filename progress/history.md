@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-29 17:40 — orchestrator — F1: lote B6.T1 (UI: router, stream y home)
+- Cambios: `apps/web` con router por hash (`lib/route.ts`, `router.svelte.ts`), `api.ts` tipado con los tipos de `@crow/core/types`, `stream.ts` (un solo `EventSource`, `reset` descarta el estado y reaplica el snapshot, reanuda con `Last-Event-ID`), reducers puros `reduce/cursor.ts` y `reduce/projects.ts` envueltos en runes (`state/projects.svelte.ts`) y las vistas Home y ProjectCard con copy en español y tema claro/oscuro. Dependencia de workspace `@crow/core` en `apps/web`, tipos de bun en su tsconfig, `lang=es` y `bun.lock`. Cubre R30 y R33.
+- Quality gate: ✅ `bun run check` verde (251 pass / 0 fail) y `bun run build` verde, Pass 2 del reviewer.
+- Notas: `localDay` queda duplicado en el reducer web porque el runtime de `@crow/core` importa `bun:sqlite`. Un hash con un escape `%` mal formado cae en not-found en lugar de dejar la app en blanco. Las rutas de split y de sesión muestran un placeholder hasta B6.T2. La API del servidor no tuvo huecos.
+- Commit / PR: feat/f1-b6t1-ui-home
+
 ## 2026-09-29 16:40 — orchestrator — F1: lote B7.T3 (prompts de Codex)
 - Cambios: `packages/adapters/codex/src/map-line.ts` emite `prompt` desde `event_msg` `item_completed` con `item.type = "UserMessage"` (≤ 8 KiB, `semanticKey = item:<item.id>:0`); los `response_item` `message` con `role=user` se descartan porque llevan el contexto inyectado en varios bloques. Se elimina `recentPrompts` del estado y `restoreCodexState` tolera estados viejos que lo traen. `codex/contract.test.ts` reemplaza el `test.todo` con los conteos por fixture y se regeneran los snapshots. `design.md` actualiza Evidencia, Mapeo Codex, D7, Limitaciones y la fila de `identity.test.ts`. Cubre R14 y R16.
 - Quality gate: ✅ `bun run check` verde (235 pass / 0 fail), Pass 2 del reviewer; receipt `f1-b7t3-prompts` firmado.
