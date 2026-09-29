@@ -5,16 +5,18 @@
  * skipping, the `user_message` dedupe window, `function_call`/`*_call_output`
  * pairing via `openCalls`, unknown types, and the no-`session_meta` fallback.
  *
- * Lines are synthetic (built from the shapes documented in design.md §
- * Evidencia "Codex CLI"): the real anonymized fixtures are B7.T2, out of
- * scope here.
+ * Most lines are synthetic (built from the shapes documented in design.md §
+ * Evidencia "Codex CLI"). The last `describe` runs the real anonymized forks
+ * of `fixtures/codex/0.145.0/` (B7.T2).
  */
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { IngestErrorReason, LineResult, PartialCrowEvent } from "@crow/core";
 import { createUlidFactory, getSessionDetail, ingestBatch, migrate } from "@crow/core";
 import type { PendingEvent } from "@crow/core";
-import { initialCodexState, mapCodexLine } from "./map-line";
+import { initialCodexState, mapCodexLine, restoreCodexState } from "./map-line";
 import type { CodexState } from "./map-line";
 
 const POS = { path: "/tmp/rollout.jsonl", offset: 0, line: 1 };
@@ -130,6 +132,8 @@ describe("mapCodexLine: token baseline and regression (design.md D7 'Usage de Co
         nickname: "Rev",
         historyStart: 5,
       }),
+      // The parent's copied session_meta proves the file carries copied history, so historyStart 5 applies.
+      sessionMetaMain("thread-a", "/tmp/crow-fixture/repo", "2026-09-24T10:00:00.000Z"),
       // ordinal 1 < historyStart 5: inherited history, no event (design.md § Mapeo Codex row "ordinal < historyStart").
       responseItem("2026-09-24T10:00:01.000Z", 1, {
         type: "message",
@@ -492,7 +496,7 @@ describe("mapCodexLine: errors and the no-session_meta fallback", () => {
     if (!result.ok) expect(result.reason).toBe("unknown-type");
   });
 
-  test("an unknown response_item subtype is reported as ingest.error unknown-type", () => {
+  test("an unknown response_item subtype (not reasoning/agent_message/tool_search_*) is reported as ingest.error unknown-type", () => {
     // Covers: R14
     const lines = [
       sessionMetaMain("thread-root", "/tmp/crow-fixture/repo", "2026-09-24T10:00:00.000Z"),
@@ -504,7 +508,7 @@ describe("mapCodexLine: errors and the no-session_meta fallback", () => {
       state = r.state;
     }
     const result = mapCodexLine(
-      responseItem("2026-09-24T10:00:01.000Z", 1, { type: "reasoning" }),
+      responseItem("2026-09-24T10:00:01.000Z", 1, { type: "mystery_item" }),
       state,
       POS,
     );
@@ -615,5 +619,217 @@ describe("ingestBatch: a nested Codex thread links to its real parent regardless
     const parent = detail.agents.find((a) => a.agentId === "thread-b");
     expect(child?.parentAgentId).toBe("thread-b");
     expect(parent?.parentAgentId).toBeNull();
+  });
+});
+
+const FORK_DIR = join(
+  import.meta.dir,
+  "..",
+  "..",
+  "..",
+  "..",
+  "fixtures",
+  "codex",
+  "0.145.0",
+  "2025",
+  "12",
+  "31",
+);
+
+interface RawTotals {
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+}
+
+/** The real, unmodified fork lines (`fixtures/codex/0.145.0`): id19/id32 carry a
+ * `subagent_history_start_ordinal` but a single `session_meta`, so the adapter ingests every line. */
+function realForkLines(file: string): string[] {
+  return readFileSync(join(FORK_DIR, file), "utf8")
+    .split("\n")
+    .filter((l) => l.trim() !== "");
+}
+
+interface RawTokenCount {
+  total: RawTotals;
+  last: RawTotals;
+}
+
+function rawTokenCounts(lines: string[]): RawTokenCount[] {
+  const out: RawTokenCount[] = [];
+  for (const l of lines) {
+    const o: {
+      type: string;
+      payload: { type?: string; info?: RawTokenCount & Record<string, unknown> };
+    } = JSON.parse(l);
+    if (o.type === "event_msg" && o.payload.type === "token_count" && o.payload.info) {
+      out.push({
+        total: o.payload.info["total_token_usage" as keyof RawTokenCount] as unknown as RawTotals,
+        last: o.payload.info["last_token_usage" as keyof RawTokenCount] as unknown as RawTotals,
+      });
+    }
+  }
+  return out;
+}
+
+function usageEvents(events: PartialCrowEvent[]): NonNullable<PartialCrowEvent["usage"]>[] {
+  return events.flatMap((e) => (e.usage ? [e.usage] : []));
+}
+
+describe("real 0.145.0 forks (BLOCKER 1): the carried-over accumulator is never counted", () => {
+  const fresh = realForkLines("rollout-2025-12-31T18-40-58-id32.jsonl");
+  const carried = realForkLines("rollout-2025-12-31T18-19-53-id19.jsonl");
+
+  test("(a) fresh fork id32: first total == last (15497), so the first usage is its last_token_usage", () => {
+    // Covers: R14, R4
+    const raw = rawTokenCounts(fresh);
+    expect(raw[0]!.total).toEqual(raw[0]!.last);
+    expect(raw[0]!.last.total_tokens).toBe(15497);
+
+    const usages = usageEvents(runOk(fresh, initialCodexState("id32")).events);
+    expect(usages[0]).toEqual({
+      input: 15317,
+      output: 180,
+      cacheRead: 0,
+      cacheCreation: 0,
+      model: "gpt-5.6-sol",
+    });
+    // Second call: the positive delta of the total, component by component.
+    expect(usages[1]).toEqual({
+      input: 7909,
+      output: 20,
+      cacheRead: 15104,
+      cacheCreation: 0,
+      model: "gpt-5.6-sol",
+    });
+    expect(usages).toHaveLength(2);
+  });
+
+  test("(b) carried fork id19: first usage is last_token_usage, NOT total; the carried 2,218,759 is excluded", () => {
+    // Covers: R14, R4
+    const raw = rawTokenCounts(carried);
+    expect(raw).toHaveLength(5);
+    // design.md:94 — the first total exceeds its last by exactly 2,218,759 tokens.
+    expect(raw[0]!.total.total_tokens).toBe(2_338_889);
+    expect(raw[0]!.last.total_tokens).toBe(120_130);
+    expect(raw[0]!.total.total_tokens - raw[0]!.last.total_tokens).toBe(2_218_759);
+
+    const usages = usageEvents(runOk(carried, initialCodexState("id19")).events);
+    expect(usages).toHaveLength(5);
+    expect(usages[0]).toEqual({ input: 1395, output: 1231, cacheRead: 117_504, cacheCreation: 0 });
+    // Not total_token_usage (input 2,331,377 / cached 2,194,432 / output 7,512):
+    expect(usages[0]!.output).not.toBe(7512);
+    expect(usages[0]!.cacheRead).not.toBe(2_194_432);
+
+    // Session total: first `last` + every positive delta of the totals = 8,609 / 4,086 / 596,736.
+    // (The last total is 2,817,823 input / 10,367 output: the carried amount would have added 2,3M.)
+    const sum = usages.reduce(
+      (acc, u) => ({
+        input: acc.input + u.input,
+        output: acc.output + u.output,
+        cacheRead: acc.cacheRead + u.cacheRead,
+      }),
+      { input: 0, output: 0, cacheRead: 0 },
+    );
+    expect(sum).toEqual({ input: 8609, output: 4086, cacheRead: 596_736 });
+    const lastTotal = raw[4]!.total;
+    const firstTotal = raw[0]!.total;
+    expect(sum.output).toBe(
+      raw[0]!.last.output_tokens + lastTotal.output_tokens - firstTotal.output_tokens,
+    );
+  });
+
+  test("(c) repeated totals count once: re-emitting the same token_count line adds no usage", () => {
+    // Covers: R14, R4
+    const first = carried.findIndex((l) => l.includes('"token_count"'));
+    const line = carried[first]!;
+    const repeated = [...carried.slice(0, first + 1), line, line];
+    const usages = usageEvents(runOk(repeated, initialCodexState("id19")).events);
+    expect(usages).toHaveLength(1);
+    expect(usages[0]).toEqual({ input: 1395, output: 1231, cacheRead: 117_504, cacheCreation: 0 });
+  });
+
+  test("(d) a regression of the real cumulative total raises usage-anomaly and counts last_token_usage", () => {
+    // Covers: R14, R4
+    const idx = carried.map((l) => l.includes('"token_count"')).lastIndexOf(true);
+    const o: { payload: { info: { total_token_usage: { input_tokens: number } } } } = JSON.parse(
+      carried[idx]!,
+    );
+    o.payload.info.total_token_usage.input_tokens = 1_000; // far below the tracked baseline
+    let state = initialCodexState("id19");
+    let warnings: string[] = [];
+    let last: PartialCrowEvent[] = [];
+    for (const line of [...carried.slice(0, idx), JSON.stringify(o)]) {
+      const r = mapCodexLine(line, state, POS);
+      if (!r.ok) throw new Error(r.reason);
+      state = r.state;
+      warnings = (r.warnings ?? []).map((w) => w.reason);
+      last = r.events;
+    }
+    expect(warnings).toEqual(["usage-anomaly"]);
+    const raw = rawTokenCounts(carried);
+    // The counted usage is the regressed line's own last_token_usage (5th call: 123,945 in, 121,600 cached).
+    expect(usageEvents(last)).toEqual([
+      {
+        input: raw[4]!.last.input_tokens - raw[4]!.last.cached_input_tokens,
+        output: raw[4]!.last.output_tokens,
+        cacheRead: raw[4]!.last.cached_input_tokens,
+        cacheCreation: 0,
+      },
+    ]);
+  });
+
+  test("the session totals stored for id19 exclude the carried accumulator (R4, R20, R21)", () => {
+    // Covers: R4, R20, R21
+    const db = new Database(":memory:");
+    migrate(db);
+    const now = Date.parse("2026-09-24T10:00:00.000Z");
+    const { events } = runOk(carried, initialCodexState("id19"));
+    ingestBatch(
+      db,
+      {
+        nextId: createUlidFactory("00000000000000000000000000", () => now),
+        now: () => now,
+        idleMs: 5 * 60_000,
+      },
+      {
+        path: "/root/id19.jsonl",
+        inode: "1",
+        nextOffset: 1,
+        state: null,
+        events: events.map((event, i) => ({
+          engine: "codex" as const,
+          source: "transcript" as const,
+          lineHash: `h${i}`,
+          part: "0",
+          pos: { path: "/root/id19.jsonl", offset: i, line: i + 1 },
+          event,
+        })),
+      },
+    );
+    const detail = getSessionDetail(db, "codex:id0");
+    expect(detail).not.toBeNull();
+    const t = detail!.session.totals;
+    expect([t.input, t.output, t.cacheRead, t.cacheCreation]).toEqual([8609, 4086, 596_736, 0]);
+    // weightedTokens (R21): input + 5*output + 0.1*cacheRead, no model on this fixture's prefix.
+    expect(t.weightedTokens).toBeCloseTo(8609 + 5 * 4086 + 0.1 * 596_736, 6);
+    // The carried accumulator alone (2,331,377 input) would weigh far more than the whole session.
+    expect(t.weightedTokens).toBeLessThan(2_331_377);
+    // R20: no model on this prefix, so nothing is priced.
+    expect(t.costUsd).toBe(0);
+  });
+});
+
+describe("restoreCodexState: states persisted before startOrdinal existed", () => {
+  test("a state with historyStart but no startOrdinal restores startOrdinal = historyStart", () => {
+    // Covers: R14
+    const { startOrdinal: _drop, ...legacy } = {
+      ...initialCodexState("thread-b"),
+      historyStart: 41,
+    };
+    const restored = restoreCodexState(legacy);
+    expect(restored?.historyStart).toBe(41);
+    expect(restored?.startOrdinal).toBe(41);
   });
 });

@@ -1,10 +1,11 @@
 # Sesión actual
 
-**Estado:** en curso (PR de B5.T2 a main; B7.T2 esperando fixtures reales)
+**Estado:** done (PR de B7.T2 a main; B5.T2 ya mergeado)
 
 ## Resultado
-F1 lote B5.T2 completado: API REST y SSE. Cubre R22–R27 y R33.
+F1 lote B7.T2 completado: fixtures reales de Codex, contrato y usage sobre forks reales, regla de historia copiada. Cubre R14, R4, R20 y R21.
 
 ## Siguiente paso
-- B7.T2: el usuario corre `scripts/find-codex-fixtures.ts` y el anonimizador sobre `~/.codex/sessions` (los scripts están en el worktree `agent-a636beaeb9dd26bfc`, aprobados sin commit); después, `codex/contract.test.ts` y los casos (a)–(d) sobre fixtures reales.
 - B5.T3: e2e de latencia, reinicio sin duplicados e hidratación.
+- B7.T3: prompts de Codex desde `response_item` `message` role user y dedupe de D7.
+- B6.T1 (UI) o B8.T1 (registro de Codex y e2e multi-motor).

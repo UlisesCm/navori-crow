@@ -50,4 +50,16 @@ describe("pricing", () => {
     // Covers: R20
     expect(costUsd(usage({ input: 100 }))).toBeUndefined();
   });
+
+  test("Codex models are unpriced: a fork's first usage (real id19 numbers) yields no costUsd, so the carried accumulator can't inflate it", () => {
+    // Covers: R20, R14
+    // fixtures/codex/0.145.0 id19 first token_count: last_token_usage counted (1395 in, 117504 cached,
+    // 1231 out); the carried total_token_usage (2,331,377 in) is never priced. OpenAI prices could not
+    // be verified (see MODEL_PRICES), so costUsd stays undefined while the tokens still count.
+    const first = usage({ model: "gpt-5.6-sol", input: 1395, cacheRead: 117_504, output: 1231 });
+    expect(costUsd(first)).toBeUndefined();
+    expect(
+      costUsd({ ...first, input: 2_331_377, cacheRead: 2_194_432, output: 7512 }),
+    ).toBeUndefined();
+  });
 });
