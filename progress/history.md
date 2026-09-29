@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-29 20:15 — orchestrator — fix: detalle de sesión con id codificado en la URL
+- Cambios: `apps/server/src/api.ts` decodifica una sola vez el `:id` de `/api/sessions/:id` y `/api/sessions/:id/events` (`decodeSessionId`); un escape mal formado da 400 `invalid-id` y los ids con `:` literal siguen funcionando. `api.test.ts` cubre ids codificados, literales, desconocidos y mal formados. `e2e/session-url.test.ts` llama a los clientes reales de la web (`fetchSessionDetail`, `fetchSessionEventsBackward`) contra un servidor real. Cubre R26, R27 y R32.
+- Quality gate: ✅ `bun run check` verde (281 pass / 0 fail) y `bun run build` verde, Pass 2 del reviewer.
+- Notas: encontrado al correr la demo de F1: la web pide `/api/sessions/${encodeURIComponent(id)}` y los ids son `engine:nativeId`, así que el detalle de sesión daba 404 en la UI real. Los tests del servidor usaban ids literales y los de la web no llegaban al servidor.
+- Commit / PR: fix/session-id-codificado
+
 ## 2026-09-29 20:10 — orchestrator — fix: atribución de `ingest.error` a su sesión y proyecto
 - Cambios: un `LineResult` fallido lleva `sessionId: string | null` y `cwd` opcional (`packages/core/src/adapter.ts`); `ingest.ts` usa `result.sessionId ?? match.sessionId` y el `cwd` del adaptador. Los adaptadores de Claude y Codex devuelven `sessionId: null` y el `cwd` del estado en sus fallas. `ensureSession` inserta como `idle` una sesión nueva cuyo único evento es un `ingest.error` (D10). Cubre R10, R15 y R17.
 - Quality gate: ✅ `bun run check` verde (281 pass / 0 fail), Pass 2 del reviewer.
