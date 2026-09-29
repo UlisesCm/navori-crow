@@ -27,6 +27,7 @@ import {
 import type { ClockFn, CrowConfig, IntervalScheduler, TailerSchedulerOptions } from "@crow/core";
 import { ENGINE_ADAPTERS } from "./adapters";
 import { createRequestHandler } from "./server";
+import { StreamRegistry } from "./sse";
 
 /** Lower than any real ULID: used as the floor when seeding a fresh factory (D9). */
 const ULID_FLOOR = "00000000000000000000000000";
@@ -62,6 +63,10 @@ export interface StartAppOptions {
   stat?: TailerSchedulerOptions["stat"];
   read?: TailerSchedulerOptions["read"];
   loadSidecar?: TailerSchedulerOptions["loadSidecar"];
+  /** `/api/stream` heartbeat interval (R23). Default 15 000 ms. */
+  heartbeatMs?: number;
+  /** `/api/stream` replay page size (D13). Default 500. */
+  streamPageSize?: number;
 }
 
 /** What `startApp` returns: the live pieces, plus a clean, ordered shutdown. */
@@ -71,8 +76,9 @@ export interface AppHandle {
   readonly bus: EventBus;
   /**
    * Stops the sweeper timer, then the tailer (awaiting its in-flight step —
-   * see `TailerScheduler.stop`), then the HTTP server, then closes the DB.
-   * That order never closes the DB under a running tailer step.
+   * see `TailerScheduler.stop`), then every open `/api/stream` (and its
+   * heartbeat), then the HTTP server, then closes the DB. That order never
+   * closes the DB under a running tailer step or a stream still reading it.
    */
   stop(): Promise<void>;
 }
@@ -97,17 +103,28 @@ export async function startApp(config: CrowConfig, opts: StartAppOptions = {}): 
 
   // 3. Bind Bun.serve on loopback only.
   const bus = new EventBus();
+  const scheduleIntervalFn = opts.scheduleInterval ?? realInterval;
+  const streams = new StreamRegistry();
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: config.crowPort,
-    fetch: createRequestHandler(config.allowedOrigins),
+    fetch: createRequestHandler(config.allowedOrigins, {
+      db,
+      bus,
+      now,
+      idleMinutes: config.idleMinutes,
+      backfillHours: config.backfillHours,
+      scheduleInterval: scheduleIntervalFn,
+      registry: streams,
+      heartbeatMs: opts.heartbeatMs,
+      streamPageSize: opts.streamPageSize,
+    }),
   });
 
   // 4. Start the tailer (with the engine registry) and the periodic sweeper.
   const roots = ENGINE_ADAPTERS.flatMap((adapter) =>
     adapter.watchRoots(config).map((root) => ({ root, adapter })),
   );
-  const scheduleIntervalFn = opts.scheduleInterval ?? realInterval;
   const tailer = new TailerScheduler({
     db,
     bus,
@@ -137,6 +154,7 @@ export async function startApp(config: CrowConfig, opts: StartAppOptions = {}): 
     async stop(): Promise<void> {
       cancelSweep();
       await tailer.stop();
+      streams.closeAll();
       server.stop(true);
       db.close();
     },
