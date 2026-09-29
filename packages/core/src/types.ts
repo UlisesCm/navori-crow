@@ -9,6 +9,7 @@ export type {
   AgentNode,
   ApiErrorResponse,
   EventsResponse,
+  HookStat,
   IngestStats,
   LaneCounters,
   LaneRejection,

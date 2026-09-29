@@ -88,12 +88,25 @@ export interface SessionsResponse {
   sessions: SessionSummary[];
 }
 
+/** Per-hook-name aggregate of a session's `hook` events (R30, D16). */
+export interface HookStat {
+  name: string;
+  runs: number;
+  totalMs: number;
+  maxMs: number;
+  blocking: number;
+}
+
 /** `GET /api/sessions/:id` */
 export interface SessionDetailResponse {
   cursor: string;
   idleMs: number;
   session: SessionSummary;
   agents: AgentNode[];
+  /** Aggregated over `kind = 'hook'` with `aggregate != true` (R30, D16). */
+  hooks: HookStat[];
+  /** Earliest counted hook's `ts` (the recorder horizon), or `null` without hooks. */
+  hooksFrom: number | null;
 }
 
 /** `GET /api/sessions/:id/events?after=|before=|tail=1&limit=`; with `before`/`tail`, `hasMore` means older events exist. */

@@ -185,6 +185,70 @@ describe("REST contracts (R25-R27, R33)", () => {
     });
   });
 
+  test("session detail aggregates hooks per name, skips aggregate spans, and reports the horizon", async () => {
+    // Covers: R30
+    await withTempDir(async (dir) => {
+      const now = Date.now();
+      const handle = await startApp(testConfig(dir), { now: () => now });
+      try {
+        const deps: IngestBatchDeps = {
+          nextId: createUlidFactory("00000000000000000000000000", () => now),
+          now: () => now,
+          idleMs: 5 * 60_000,
+        };
+        seedFixture({ db: handle.db, deps });
+        const hook = (
+          n: number,
+          ts: number,
+          h: { name: string; ms?: number; blocking?: boolean; aggregate?: boolean },
+        ): PendingEvent =>
+          makePending(
+            { lineHash: `hk${n}` },
+            {
+              sessionId: "s1",
+              cwd: "/tmp/proj-a",
+              kind: "hook",
+              ts,
+              text: undefined,
+              hook: { phase: "PostToolUse", ...h },
+            },
+          );
+        ingestBatch(handle.db, deps, {
+          path: "/tmp/proj-a.jsonl",
+          inode: "1",
+          nextOffset: 99,
+          state: null,
+          events: [
+            hook(1, 5_000, { name: "lint", ms: 100 }),
+            hook(2, 4_000, { name: "lint", ms: 300, blocking: true }),
+            hook(3, 6_000, { name: "fmt", ms: 10 }),
+            hook(4, 1_000, { name: "beta-span", ms: 9_999, aggregate: true }),
+          ],
+        });
+
+        const base = `http://127.0.0.1:${handle.server.port}`;
+        const body = (await (await fetch(`${base}/api/sessions/claude:s1`)).json()) as {
+          hooks: unknown[];
+          hooksFrom: number | null;
+        };
+        expect(body.hooks).toEqual([
+          { name: "lint", runs: 2, totalMs: 400, maxMs: 300, blocking: 1 },
+          { name: "fmt", runs: 1, totalMs: 10, maxMs: 10, blocking: 0 },
+        ]);
+        expect(body.hooksFrom).toBe(4_000);
+
+        const empty = (await (await fetch(`${base}/api/sessions/claude:s2`)).json()) as {
+          hooks: unknown[];
+          hooksFrom: number | null;
+        };
+        expect(empty.hooks).toEqual([]);
+        expect(empty.hooksFrom).toBeNull();
+      } finally {
+        await handle.stop();
+      }
+    });
+  });
+
   test("backward paging: tail, before, unknown before and conflicting cursors", async () => {
     // Covers: R27, R33
     await withTempDir(async (dir) => {

@@ -3,6 +3,7 @@ import { basename } from "node:path";
 import type { AgentMetaPatch, JsonValue, LinePos, MatchSpec, PartialCrowEvent } from "../adapter";
 import type {
   AgentNode,
+  HookStat,
   ProjectSummary,
   SessionSummary,
   SessionStatus,
@@ -1322,6 +1323,54 @@ function agentNodeFromRow(row: AgentRow): AgentNode {
     lastEventAt: row.last_event_at,
     totals: totalsFromRow(row),
   };
+}
+
+/**
+ * Per-name hook aggregate of a session (R30, D16): `hook` events with `aggregate != true`
+ * (beta spans summarize whole invocations). Uses `events_by_session`; the kind filter runs over
+ * that session's rows only.
+ */
+export function sessionHookStats(
+  db: Database,
+  sessionId: string,
+): { hooks: HookStat[]; hooksFrom: number | null } {
+  const rows = db
+    .query<
+      {
+        name: string | null;
+        runs: number;
+        totalMs: number;
+        maxMs: number;
+        blocking: number;
+        first: number;
+      },
+      [string]
+    >(
+      `SELECT json_extract(body_json, '$.hook.name') AS name,
+              COUNT(*) AS runs,
+              COALESCE(SUM(json_extract(body_json, '$.hook.ms')), 0) AS totalMs,
+              COALESCE(MAX(json_extract(body_json, '$.hook.ms')), 0) AS maxMs,
+              COALESCE(SUM(CASE WHEN json_extract(body_json, '$.hook.blocking') = 1 THEN 1 ELSE 0 END), 0) AS blocking,
+              MIN(ts) AS first
+         FROM events
+        WHERE session_id = ? AND kind = 'hook'
+          AND COALESCE(json_extract(body_json, '$.hook.aggregate'), 0) != 1
+        GROUP BY name
+        ORDER BY runs DESC, name ASC`,
+    )
+    .all(sessionId);
+  let hooksFrom: number | null = null;
+  const hooks = rows.map((r) => {
+    hooksFrom = hooksFrom === null ? r.first : Math.min(hooksFrom, r.first);
+    return {
+      name: r.name ?? "",
+      runs: r.runs,
+      totalMs: r.totalMs,
+      maxMs: r.maxMs,
+      blocking: r.blocking,
+    };
+  });
+  return { hooks, hooksFrom };
 }
 
 /** `GET /api/sessions/:id` (R26): a session's summary plus its agent tree. `null` if the id is unknown. */
