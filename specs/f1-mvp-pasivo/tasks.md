@@ -29,7 +29,7 @@ Cada lote es un PR a `main` con `bun run check` en verde. Cada test lleva `// Co
 
 - [x] **B5.T1** (R2, R28) — `apps/server/src/adapters.ts` (registro con Claude), `app.ts` (no escucha si la migración falla), `guard.ts` para Host y Origin, y modo dev (Vite en 5173 con `strictPort` y `CROW_ALLOWED_ORIGINS`) según D14. · test: `guard.test.ts` más integración.
 - [x] **B5.T2** (R22, R23, R24, R25, R26, R27) — REST (`/api/projects`, `/api/sessions`, `/api/sessions/:id`, `/api/sessions/:id/events`, `/api/events`, `/api/stats`, y 409 `unknown-cursor`) y `sse.ts` (validación de cursor con `reset`, subscribe-buffer-replay-flush, heartbeat de 15 s, `server.timeout(req, 0)`) según D13. · tests: `api.test.ts`, `sse.test.ts` y `sse-replay.test.ts` casos (a)–(f).
-- [ ] **B5.T3** (R6, R16, R29) — e2e de latencia (el máximo de 5 appends es < 2000 ms), reinicio sin duplicados e hidratación de una sesión previa. · tests: `e2e/latency.test.ts`, `e2e/restart.test.ts` y `e2e/hydrate.test.ts`.
+- [x] **B5.T3** (R6, R16, R29) — e2e de latencia (el máximo de 5 appends es < 2000 ms), reinicio sin duplicados e hidratación de una sesión previa. · tests: `e2e/latency.test.ts`, `e2e/restart.test.ts` y `e2e/hydrate.test.ts`.
 
 ## B6 · UI (depende de B5)
 
