@@ -33,6 +33,7 @@ import type {
   SessionStatus,
   StatsResponse,
 } from "@crow/core";
+import { laneStatus } from "./otlp-server";
 
 /** Dependencies the REST handlers need, closed over by `routeApi`'s caller. */
 export interface RestContext {
@@ -196,7 +197,7 @@ function handleEvents(url: URL, ctx: RestContext): Response {
 function handleStats(ctx: RestContext): Response {
   const body: StatsResponse = {
     ingest: stats(ctx.db),
-    lanes: ctx.lanes?.() ?? { since: ctx.now(), engines: {} },
+    lanes: ctx.lanes?.() ?? { since: ctx.now(), engines: {}, otlp: laneStatus("disabled", null) },
   };
   return Response.json(body);
 }
