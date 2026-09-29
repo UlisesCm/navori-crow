@@ -33,7 +33,7 @@ Cada lote es un PR a `main` con `bun run check` en verde. Cada test lleva `// Co
 
 ## B6 · UI (depende de B5)
 
-- [ ] **B6.T1** (R30, R33) — Router por hash, `api.ts`, `stream.ts` (un solo `EventSource` y manejo de `reset`), reducers puros envueltos en runes (D16) y home con tarjetas por proyecto. · tests: `reduce/projects.test.ts` y `reduce/cursor.test.ts`.
+- [x] **B6.T1** (R30, R33) — Router por hash, `api.ts`, `stream.ts` (un solo `EventSource` y manejo de `reset`), reducers puros envueltos en runes (D16) y home con tarjetas por proyecto. · tests: `reduce/projects.test.ts` y `reduce/cursor.test.ts`.
 - [ ] **B6.T2** (R31, R32) — Split de 2 a 4 proyectos y detalle de sesión (timeline filtrable, árbol de agentes y panel de costo; 500 eventos con opción de ver anteriores). · tests: `reduce/feed.test.ts` y `reduce/session.test.ts`.
 
 ## B7 · adaptador Codex (depende de B3; puede ir en paralelo a B4–B6, no toca `apps/server`)
