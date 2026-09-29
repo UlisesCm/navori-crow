@@ -1,10 +1,10 @@
 # Sesión actual
 
-**Estado:** done (B8.T1 mergeado; PR de B6.T1 a main)
+**Estado:** done (PR de B6.T2 a main)
 
 ## Resultado
-F1 lotes B8.T1 (Codex registrado y e2e multi-motor) y B6.T1 (UI: router, stream y home con tarjetas) completados.
+F1 lote B6.T2 completado: split de 2 a 4 proyectos y detalle de sesión (timeline filtrable, árbol de agentes, panel de costo, 500 eventos con "mostrar anteriores").
 
 ## Siguiente paso
-- B6.T2 (split y detalle de sesión; distinguir el prompt inicial de un subagente del texto que teclea el usuario; mover `localDay` a un módulo de core seguro para el navegador; reintento del stream cuando queda CLOSED; totales de "hoy" congelados en el snapshot).
-- Demo manual de F1.
+- Demo manual de F1 (PLAN.md §14, criterios 1–4): dos repos con Claude y uno con Codex en vivo, split, reinicio sin duplicados e hidratación.
+- Deuda: paginación descendente en `/api/sessions/:id/events` para no leer la sesión completa al abrirla; el hilo principal en el árbol de agentes.

@@ -10,6 +10,12 @@ Entradas más recientes arriba. Formato sugerido (no obligatorio):
 - Commit / PR: <hash / URL>
 -->
 
+## 2026-09-29 18:40 — orchestrator — F1: lote B6.T2 (split y detalle de sesión)
+- Cambios: `apps/web` con reducers puros `reduce/feed.ts` y `reduce/session.ts` envueltos en runes (`state/split.svelte.ts`, `state/session.svelte.ts`), vistas `Split`, `FeedColumn`, `Session`, `Timeline`, `AgentTree` y `CostPanel`; `Home` selecciona de 2 a 4 proyectos y `ProjectCard` enlaza a las sesiones en vivo. `localDay` pasa a `packages/core/src/time.ts` (subpath `@crow/core/time`, sin imports) y se elimina el duplicado web. `stream.ts` reinicia el store con backoff de 1 s a 30 s cuando el `EventSource` queda cerrado, y omite un `after` vacío. `reduce/projects.ts` agrega `rollDay`, que pone en cero los totales de "hoy" al cambiar el día local. Cubre R31 y R32.
+- Quality gate: ✅ `bun run check` verde (273 pass / 0 fail) y `bun run build` verde, Pass 2 del reviewer.
+- Notas: un `prompt` con `agentId` no nulo se muestra como "Instrucción del agente padre"; con `agentId` nulo, como "Prompt del usuario". Con la DB vacía, el cursor del snapshot es `""` y enviar `after=` provocaba un bucle de reset; se corrigió. `/api/sessions/:id/events` solo pagina en orden ascendente, así que el cliente pagina la sesión completa al abrirla y conserva las últimas 500 (el diseño pide un tope de render, no de lectura); una sesión larga cuesta más al abrir. El hilo principal no tiene fila en `agents`, así que el árbol muestra solo subagentes.
+- Commit / PR: feat/f1-b6t2-split-session
+
 ## 2026-09-29 17:40 — orchestrator — F1: lote B6.T1 (UI: router, stream y home)
 - Cambios: `apps/web` con router por hash (`lib/route.ts`, `router.svelte.ts`), `api.ts` tipado con los tipos de `@crow/core/types`, `stream.ts` (un solo `EventSource`, `reset` descarta el estado y reaplica el snapshot, reanuda con `Last-Event-ID`), reducers puros `reduce/cursor.ts` y `reduce/projects.ts` envueltos en runes (`state/projects.svelte.ts`) y las vistas Home y ProjectCard con copy en español y tema claro/oscuro. Dependencia de workspace `@crow/core` en `apps/web`, tipos de bun en su tsconfig, `lang=es` y `bun.lock`. Cubre R30 y R33.
 - Quality gate: ✅ `bun run check` verde (251 pass / 0 fail) y `bun run build` verde, Pass 2 del reviewer.
