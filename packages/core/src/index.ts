@@ -68,6 +68,7 @@ export {
   getSessionDetail,
   hasEvent,
   ingestBatch,
+  ingestEvents,
   listEventsAfter,
   listProjects,
   listRecentEvents,

@@ -171,7 +171,12 @@ describe("REST contracts (R25-R27, R33)", () => {
         const statsRes = await fetch(`${base}/api/stats`);
         expect(statsRes.status).toBe(200);
         expect(await statsRes.json()).toEqual({
-          ingest: { semanticDuplicates: 0, usageAnomalies: 0, errorsByReason: {} },
+          ingest: {
+            semanticDuplicates: 0,
+            usageAnomalies: 0,
+            laneDuplicates: 0,
+            errorsByReason: {},
+          },
         });
       } finally {
         await handle.stop();

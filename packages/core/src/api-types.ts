@@ -30,7 +30,11 @@ export interface SessionSummary {
   endedAt: number | null;
   model: string | null;
   lastPrompt: string | null;
+  /** `ts` of the prompt in `lastPrompt`; later-arriving older prompts must not replace it (BD1). */
+  lastPromptAt: number | null;
   activeAgent: { agentId: string; type: string | null } | null;
+  /** Latest agent start/stop `ts` applied; an older `agent.start` must not change `activeAgent` (BD1). */
+  activeAgentAt: number | null;
   totals: Totals;
 }
 
@@ -66,6 +70,8 @@ export interface AgentNode {
 export interface IngestStats {
   semanticDuplicates: number;
   usageAnomalies: number;
+  /** Contributions dropped because the same lane had already contributed to that fact (D5). */
+  laneDuplicates: number;
   errorsByReason: Partial<Record<IngestErrorReason, number>>;
 }
 
