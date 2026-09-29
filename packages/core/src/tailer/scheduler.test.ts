@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bindAdapter } from "../adapter";
@@ -9,7 +9,7 @@ import { migrate } from "../store/migrations";
 import { createUlidFactory } from "../ulid";
 import { readLines } from "./line-reader";
 import { Scheduler, TailerScheduler } from "./tailer";
-import type { IntervalScheduler } from "./tailer";
+import type { IntervalScheduler, watchRoot } from "./tailer";
 import { makeTestAdapter, testLine } from "./testing/test-adapter";
 
 function freshDb(): Database {
@@ -306,6 +306,91 @@ describe("TailerScheduler: injectable timers and stop() (D4, D6)", () => {
       await expect(scheduler.start()).rejects.toThrow("boom");
 
       await scheduler.stop(); // must resolve cleanly despite the failed step
+    });
+  });
+});
+
+describe("TailerScheduler: watch hints skip the startup replay (R5, R9)", () => {
+  const HOUR = 60 * 60_000;
+
+  /** Builds a scheduler whose watcher is fake: `hint(path)` is what `fs.watch` would report. */
+  async function setup(dir: string, path: string, ageMs: number) {
+    writeFileSync(path, `${testLine({ sessionId: "s1", ts: NOW, text: "one" })}\n`);
+    const old = new Date(NOW - ageMs);
+    utimesSync(path, old, old);
+    const db = freshDb();
+    const bus = new EventBus();
+    const received: unknown[] = [];
+    bus.subscribe((events) => received.push(...events));
+    let onHint: (p: string) => void = () => {};
+    const watch: typeof watchRoot = (_root, cb) => {
+      onHint = cb;
+      return null;
+    };
+    const scheduler = new TailerScheduler({
+      db,
+      bus,
+      roots: [{ root: dir, adapter: bindAdapter(makeTestAdapter()) }],
+      nextId: createUlidFactory("00000000000000000000000000", () => NOW),
+      now: () => NOW,
+      idleMs: 5 * 60_000,
+      backfillWindowMs: 24 * HOUR,
+      pollIntervalMs: 1000,
+      rescanIntervalMs: 30_000,
+      scheduleInterval: fakeIntervalScheduler().scheduleInterval,
+      watch,
+    });
+    return { scheduler, received, hint: (p: string) => onHint(p) };
+  }
+
+  test("a replayed hint for an out-of-window file with no offset is dropped", async () => {
+    // Covers: R5, R9
+    await withTempDir(async (dir) => {
+      const path = join(dir, "old.jsonl");
+      const { scheduler, received, hint } = await setup(dir, path, 48 * HOUR);
+      await scheduler.start();
+      expect(received).toHaveLength(0);
+
+      hint(path);
+      await scheduler.runPendingSteps();
+
+      expect(received).toHaveLength(0);
+      await scheduler.stop();
+    });
+  });
+
+  test("the same file is ingested by a hint once its mtime is inside the window", async () => {
+    // Covers: R5, R9
+    await withTempDir(async (dir) => {
+      const path = join(dir, "old.jsonl");
+      const { scheduler, received, hint } = await setup(dir, path, 48 * HOUR);
+      await scheduler.start();
+      utimesSync(path, new Date(), new Date());
+
+      hint(path);
+      await scheduler.runPendingSteps();
+
+      expect(received).toHaveLength(1);
+      await scheduler.stop();
+    });
+  });
+
+  test("an out-of-window file with a persisted offset is still followed by a hint", async () => {
+    // Covers: R5, R9
+    await withTempDir(async (dir) => {
+      const path = join(dir, "old.jsonl");
+      const { scheduler, received, hint } = await setup(dir, path, 0); // in window: start() ingests it
+      await scheduler.start();
+      expect(received).toHaveLength(1);
+
+      appendFileSync(path, `${testLine({ sessionId: "s1", ts: NOW, text: "two" })}\n`);
+      const old = new Date(NOW - 48 * HOUR);
+      utimesSync(path, old, old);
+      hint(path);
+      await scheduler.runPendingSteps();
+
+      expect(received).toHaveLength(2);
+      await scheduler.stop();
     });
   });
 });

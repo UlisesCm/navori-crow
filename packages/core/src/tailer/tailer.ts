@@ -410,6 +410,8 @@ export interface TailerSchedulerOptions {
   loadSidecar?: SidecarLoader;
   /** Injected in tests to drive ticks manually instead of waiting on real timers. */
   scheduleInterval?: IntervalScheduler;
+  /** Watcher factory; defaults to {@link watchRoot}. Injected in tests to fire hints by hand. */
+  watch?: typeof watchRoot;
 }
 
 /**
@@ -427,6 +429,9 @@ export class TailerScheduler {
   private readonly cancelTimers: Array<() => void> = [];
   private readonly scheduleIntervalFn: IntervalScheduler;
   private draining = false;
+  private stopped = false;
+  /** Watch hints still doing their stat/offset check; drained before each step run and by `stop()`. */
+  private readonly hintsInFlight = new Set<Promise<void>>();
   /** The most recently started drain, so `stop()` can await whatever's in flight instead of racing it. */
   private drainPromise: Promise<void> = Promise.resolve();
 
@@ -442,6 +447,30 @@ export class TailerScheduler {
   /** Queues `path` for immediate processing (a watch hint, or any other external signal). */
   hint(path: string): void {
     this.queue.enqueueHot(path);
+  }
+
+  /**
+   * A watcher hint, minus the startup replay: the OS can replay the events of files written
+   * just before `fs.watch` started (FSEvents on macOS), and a hot hint bypasses the backfill
+   * window (R9). A file that is out of the window and was never tailed is left to the rescan.
+   */
+  private async watchHint(path: string): Promise<void> {
+    const mtimeMs = await mtimeOf(path);
+    const cutoff = this.opts.now() - this.opts.backfillWindowMs;
+    if (mtimeMs !== null && mtimeMs < cutoff && getOffset(this.opts.db, path) === null) {
+      return;
+    }
+    this.hint(path);
+  }
+
+  /** Runs `watchHint` tracked, never rejecting: a failed check falls back to a plain hint unless stopped. */
+  private trackWatchHint(path: string): void {
+    const run = this.watchHint(path)
+      .catch(() => {
+        if (!this.stopped) this.hint(path); // e.g. transient DB error: hint anyway, processing re-checks
+      })
+      .finally(() => this.hintsInFlight.delete(run));
+    this.hintsInFlight.add(run);
   }
 
   private async processOne(path: string): Promise<void> {
@@ -460,6 +489,7 @@ export class TailerScheduler {
    * the running one will keep draining until the queue is empty anyway.
    */
   async runPendingSteps(): Promise<void> {
+    await Promise.allSettled([...this.hintsInFlight]);
     if (this.draining) return;
     this.draining = true;
     const drain = (async () => {
@@ -491,7 +521,7 @@ export class TailerScheduler {
    */
   async start(): Promise<void> {
     for (const { root } of this.opts.roots) {
-      const watcher = watchRoot(root, (path) => this.hint(path));
+      const watcher = (this.opts.watch ?? watchRoot)(root, (path) => this.trackWatchHint(path));
       if (watcher !== null) this.watchers.push(watcher);
     }
     await this.rescanOnce();
@@ -519,7 +549,9 @@ export class TailerScheduler {
    * ingest error into the caller trying to shut down.
    */
   async stop(): Promise<void> {
+    this.stopped = true;
     for (const watcher of this.watchers.splice(0)) watcher.close();
+    await Promise.allSettled([...this.hintsInFlight]);
     for (const cancel of this.cancelTimers.splice(0)) cancel();
     await this.drainPromise.catch(() => {});
   }
