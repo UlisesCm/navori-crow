@@ -1,10 +1,11 @@
 # Sesión actual
 
-**Estado:** done (B5.T3 mergeado; PR de B7.T3 a main)
+**Estado:** done (PR de B8.T1 a main; B6.T1 en curso en otro worktree)
 
 ## Resultado
-F1 lotes B5.T3 (e2e de latencia, reinicio e hidratación) y B7.T3 (prompts de Codex desde `item_completed` UserMessage) completados.
+F1 lote B8.T1 completado: Codex registrado en el servidor y e2e con dos repos de Claude y uno de Codex en vivo.
 
 ## Siguiente paso
-- B6.T1 (UI: router, `api.ts`, `stream.ts`, home con tarjetas) o B8.T1 (registro de Codex y e2e multi-motor).
-- En B6: distinguir el prompt inicial de un subagente (instrucción del orquestador) del texto que teclea el usuario.
+- B6.T1 (UI: router, `api.ts`, `stream.ts`, home con tarjetas).
+- B6.T2 (split y detalle de sesión; distinguir el prompt inicial de un subagente del texto que teclea el usuario).
+- Demo manual de F1.
