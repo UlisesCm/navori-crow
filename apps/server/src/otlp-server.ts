@@ -2,15 +2,21 @@
  * The OTLP/HTTP receiver: a separate `Bun.serve` on `127.0.0.1:CROW_OTLP_PORT`, opt-in (design.md
  * D8, R14, R15, R34).
  *
- * The request path never touches the DB: decode → flatten → `routeOtel` → answer → enqueue. A
- * drainer stores the queued events in steps of at most {@link DRAIN_STEP_EVENTS}, yielding the
- * thread between steps, so the receiver (and the main server) never wait for storage (MF5).
+ * The request path never touches the DB: decode → flatten → `routeOtel` → enqueue → answer, so the
+ * receiver (and the main server) never wait for storage (MF5).
  *
- * TODO(queue): this FIFO is OTLP-local. D2 puts it inside the shared `IngestQueue` (B2); when
- * that lands, replace `queue`/`drain` here by the otel FIFO's `offer`, keeping the 503 contract.
+ * The decoded, routed events go to the shared `IngestQueue` (D2) via `enqueueOtel`; a full OTel FIFO
+ * answers 503 with `Retry-After`. There is no drainer here: the queue's single drainer is the only
+ * writer.
  */
 import type { Server } from "bun";
-import type { BoundAdapter, FlatOtelRecord, PendingEvent } from "@crow/core";
+import type {
+  BoundAdapter,
+  FlatOtelRecord,
+  IngestQueue,
+  OtlpLaneState,
+  OtlpLaneStatus,
+} from "@crow/core";
 import {
   decodeOtlpProtobuf,
   flattenOtlp,
@@ -26,29 +32,14 @@ import { EpisodeLimiter, routeOtel } from "./otlp-route";
 export const MAX_RAW_BYTES = 16 * 1024 * 1024;
 /** Decompressed body cap (D8): 32 MiB. */
 export const MAX_DECODED_BYTES = 32 * 1024 * 1024;
-/** Estimated bytes the OTLP FIFO may hold before answering 503 (D2): 64 MiB. */
-export const MAX_QUEUE_BYTES = 64 * 1024 * 1024;
-/** Events stored per drain step (D2). */
-export const DRAIN_STEP_EVENTS = 200;
+/** Retry-After (seconds) sent with the 503 of a full OTel FIFO (D8). */
+const RETRY_AFTER_SECONDS = "5";
 
-/** State of the OTLP lane, as `crow doctor` and `/api/stats.lanes` report it (D15). */
-export type OtlpLaneState = "listening" | "disabled" | "port-in-use" | "error";
-
-/** Snapshot of the OTLP lane. Counts only, never content (D15). */
-export interface OtlpLaneStatus {
-  state: OtlpLaneState;
-  /** The bound port while `listening`, else the configured one. */
-  port: number | null;
-  lastReceivedAt: number | null;
-  /** Export requests accepted (200). */
-  requests: number;
-  /** Records nobody owns or that carry no session (R17, `stats.otelUnattributed`). */
-  otelUnattributed: number;
-  /** Known records with no mapping (`stats.otelIgnored`). */
-  otelIgnored: number;
-  /** Requests answered 503 because the queue was full. */
-  rejectedFull: number;
-}
+/**
+ * Nominal bytes charged per `ingest.error` (its message cap), so episode errors count against the
+ * OTel FIFO cap instead of bypassing it (D8, R17).
+ */
+export const ERROR_EVENT_BYTES = 1024;
 
 /** A zeroed lane status in `state`. */
 export function laneStatus(state: OtlpLaneState, port: number | null): OtlpLaneStatus {
@@ -60,6 +51,7 @@ export function laneStatus(state: OtlpLaneState, port: number | null): OtlpLaneS
     otelUnattributed: 0,
     otelIgnored: 0,
     rejectedFull: 0,
+    errorsDropped: 0,
   };
 }
 
@@ -68,15 +60,12 @@ export interface OtlpServerOptions {
   port: number;
   allowedOrigins: readonly string[];
   adapters: readonly BoundAdapter[];
-  /** Stores one step of events and publishes them; called from the drainer only. */
-  ingest: (events: PendingEvent[]) => void;
+  /** The shared queue (D2): the receiver only ever calls `enqueueOtel`. */
+  queue: Pick<IngestQueue, "enqueueOtel">;
   now: () => number;
   version: string;
   maxRawBytes?: number;
   maxDecodedBytes?: number;
-  maxQueueBytes?: number;
-  /** Runs `fn` on a later macrotask. Default `setTimeout(fn, 0)`. */
-  scheduleDrain?: (fn: () => void) => void;
 }
 
 /** A running OTLP receiver. */
@@ -211,12 +200,6 @@ async function readBody(
   return out;
 }
 
-interface QueueItem {
-  events: PendingEvent[];
-  /** Estimated bytes still held by `events`. */
-  bytes: number;
-}
-
 /**
  * Starts the receiver. Throws (synchronously, `code: "EADDRINUSE"`) when the port is taken — the
  * caller turns that into the `port-in-use` lane state (R15).
@@ -224,56 +207,8 @@ interface QueueItem {
 export function startOtlpServer(opts: OtlpServerOptions): OtlpServer {
   const maxRaw = opts.maxRawBytes ?? MAX_RAW_BYTES;
   const maxDecoded = opts.maxDecodedBytes ?? MAX_DECODED_BYTES;
-  const maxQueue = opts.maxQueueBytes ?? MAX_QUEUE_BYTES;
-  const schedule = opts.scheduleDrain ?? ((fn: () => void) => void setTimeout(fn, 0));
   const limiter = new EpisodeLimiter();
-
-  const queue: QueueItem[] = [];
-  let queuedBytes = 0;
-  let draining = false;
-  let stopped = false;
   const stats = laneStatus("listening", null);
-
-  const step = (): void => {
-    if (stopped) {
-      draining = false;
-      return;
-    }
-    const batch: PendingEvent[] = [];
-    while (batch.length < DRAIN_STEP_EVENTS && queue.length > 0) {
-      const head = queue[0] as QueueItem;
-      const take = Math.min(DRAIN_STEP_EVENTS - batch.length, head.events.length);
-      const per = head.bytes / head.events.length;
-      batch.push(...head.events.splice(0, take));
-      head.bytes -= per * take;
-      queuedBytes -= per * take;
-      if (head.events.length === 0) {
-        queuedBytes -= head.bytes;
-        queue.shift();
-      }
-    }
-    try {
-      opts.ingest(batch);
-    } catch {
-      // The store never throws on data (D2/MF7); an environmental failure drops this step
-      // rather than wedging the drainer. Counts only, no content.
-      console.warn(`crow: OTLP step of ${batch.length} events was not stored`);
-    }
-    if (queue.length > 0) schedule(step);
-    else draining = false;
-  };
-
-  const enqueue = (events: PendingEvent[], bytes: number, force: boolean): boolean => {
-    if (events.length === 0) return true;
-    if (!force && queuedBytes + bytes > maxQueue) return false;
-    queue.push({ events, bytes });
-    queuedBytes += bytes;
-    if (!draining) {
-      draining = true;
-      schedule(step);
-    }
-    return true;
-  };
 
   const handle = async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
@@ -331,15 +266,19 @@ export function startOtlpServer(opts: OtlpServerOptions): OtlpServer {
     }
 
     const routed = routeOtel(records, opts.adapters, limiter, opts.now());
-    // Only the events of mapped records count against the cap; the tiny `ingest.error`s of an
-    // episode always go in so the unattributable stream stays visible even under pressure (R17).
+    // Mapped events are charged the body size; each `ingest.error` a nominal ERROR_EVENT_BYTES. A
+    // refused error batch never fails the request: it is counted in `errorsDropped` (R17).
     const errors = routed.events.filter((e) => e.event.kind === "ingest.error");
     const mapped = routed.events.filter((e) => e.event.kind !== "ingest.error");
-    if (!enqueue(mapped, bytes.length, false)) {
+    if (!opts.queue.enqueueOtel(mapped, bytes.length)) {
       stats.rejectedFull++;
-      return failure(wire, 503, "queue full, retry later", { "retry-after": "5" });
+      return failure(wire, 503, "queue full, retry later", {
+        "retry-after": RETRY_AFTER_SECONDS,
+      });
     }
-    enqueue(errors, 0, true);
+    if (!opts.queue.enqueueOtel(errors, errors.length * ERROR_EVENT_BYTES)) {
+      stats.errorsDropped += errors.length;
+    }
 
     stats.requests++;
     stats.lastReceivedAt = opts.now();
@@ -365,11 +304,10 @@ export function startOtlpServer(opts: OtlpServerOptions): OtlpServer {
     server,
     status: () => ({ ...stats }),
     /**
-     * Stops accepting and closes the listener. Items still queued and not yet drained are
-     * dropped, not stored (design.md § Failure modes, shutdown); exporters retry on their own.
+     * Stops accepting and closes the listener. Whatever is still in the shared queue is not
+     * drained after `IngestQueue.stop` (design.md § Failure modes, shutdown); exporters retry.
      */
     async stop(): Promise<void> {
-      stopped = true;
       await server.stop(true);
     },
   };

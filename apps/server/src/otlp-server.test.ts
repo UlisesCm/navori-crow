@@ -2,12 +2,20 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bindAdapter, loadConfig } from "@crow/core";
-import type { CrowConfig, EngineAdapter, FlatOtelRecord, PendingEvent } from "@crow/core";
+import { Database } from "bun:sqlite";
+import { bindAdapter, EventBus, IngestQueue, loadConfig, migrate } from "@crow/core";
+import type {
+  CrowConfig,
+  EngineAdapter,
+  FlatOtelRecord,
+  IngestQueueOptions,
+  PendingEvent,
+  StatsResponse,
+} from "@crow/core";
 import { hexToBytes, lp, wrap } from "../../../fixtures/otlp/protobuf/vectors";
 import { startApp } from "./app";
 import type { AppHandle } from "./app";
-import { startOtlpServer } from "./otlp-server";
+import { ERROR_EVENT_BYTES, startOtlpServer } from "./otlp-server";
 import { UNATTRIBUTABLE_EPISODE_MS } from "./otlp-route";
 import type { OtlpServer, OtlpServerOptions } from "./otlp-server";
 
@@ -24,6 +32,19 @@ const testAdapter: EngineAdapter<null> = {
     sessionId: null,
     agentId: null,
     state: null,
+  }),
+  fromHook: () => ({
+    ok: true,
+    events: [
+      {
+        sessionId: "hooked",
+        agentId: null,
+        parentAgentId: null,
+        kind: "prompt",
+        ts: 1_700_000_000_000,
+        cwd: "/tmp/proj",
+      },
+    ],
   }),
   ownsOtel: (r: FlatOtelRecord) => typeof r.attrs["test.session"] === "string",
   fromOtel: (r: FlatOtelRecord) => ({
@@ -78,8 +99,11 @@ function logsProto(key: string, value: string): Uint8Array<ArrayBuffer> {
 
 interface Harness {
   otlp: OtlpServer;
+  queue: IngestQueue;
+  /** Everything the shared queue's drainer wrote, in order. */
   events: PendingEvent[];
-  flush: () => void;
+  /** Waits until the shared queue's drainer has emptied both FIFOs. */
+  flush: () => Promise<void>;
   clock: { now: number };
   url: string;
 }
@@ -92,26 +116,49 @@ afterEach(async () => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-/** A receiver on an ephemeral port with a manual drain scheduler and a recording `ingest`. */
-function harness(extra: Partial<OtlpServerOptions> = {}): Harness {
+/**
+ * A receiver on an ephemeral port feeding a real shared `IngestQueue` whose store write is a
+ * recording seam, so the tests see exactly what the single drainer would write.
+ */
+function harness(
+  extra: Partial<OtlpServerOptions> = {},
+  queueOpts: Partial<IngestQueueOptions> = {},
+): Harness {
   const events: PendingEvent[] = [];
-  const pendingSteps: Array<() => void> = [];
   const clock = { now: T0 };
+  const db = new Database(":memory:");
+  migrate(db);
+  const queue = new IngestQueue({
+    db,
+    bus: new EventBus(),
+    nextId: () => "id",
+    now: () => clock.now,
+    idleMs: 60_000,
+    adapters: ADAPTERS,
+    ingest: (_db, _deps, batch) => {
+      events.push(...batch);
+      return [];
+    },
+    ...queueOpts,
+  });
   const otlp = startOtlpServer({
     port: 0,
     allowedOrigins: [],
     adapters: ADAPTERS,
-    ingest: (batch) => void events.push(...batch),
+    queue,
     now: () => clock.now,
     version: "9.9.9",
-    scheduleDrain: (fn) => void pendingSteps.push(fn),
     ...extra,
   });
-  running.push(otlp);
-  const flush = (): void => {
-    while (pendingSteps.length > 0) pendingSteps.shift()?.();
+  running.push(otlp, queue);
+  return {
+    otlp,
+    queue,
+    events,
+    flush: () => queue.idle(),
+    clock,
+    url: `http://127.0.0.1:${otlp.server.port}`,
   };
-  return { otlp, events, flush, clock, url: `http://127.0.0.1:${otlp.server.port}` };
 }
 
 const post = (h: Harness, path: string, body: BodyInit, headers: Record<string, string>) =>
@@ -128,7 +175,7 @@ describe("OTLP receiver: responses (R14)", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("application/json");
     expect(await res.json()).toEqual({});
-    h.flush();
+    await h.flush();
     expect(h.events.map((e) => [e.engine, e.source, e.event.sessionId])).toEqual([
       ["testeng", "otel", "s1"],
     ]);
@@ -141,7 +188,7 @@ describe("OTLP receiver: responses (R14)", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("application/x-protobuf");
     expect((await res.arrayBuffer()).byteLength).toBe(0);
-    h.flush();
+    await h.flush();
     expect(h.events[0]?.event.sessionId).toBe("s2");
   });
 
@@ -158,7 +205,7 @@ describe("OTLP receiver: responses (R14)", () => {
       ...gz,
     });
     expect([a.status, b.status]).toEqual([200, 200]);
-    h.flush();
+    await h.flush();
     expect(h.events.map((e) => e.event.sessionId)).toEqual(["g1", "g2"]);
   });
 
@@ -234,36 +281,113 @@ describe("OTLP receiver: responses (R14)", () => {
     expect(h.events).toEqual([]);
   });
 
-  test("503 + Retry-After when the queue is full; accepted again after it drains", async () => {
+  test("503 + Retry-After when the shared OTel FIFO is full; accepted again after it drains", async () => {
     // Covers: R14
     const body = logsJson([attr("test.session", "q")]);
-    const h = harness({ maxQueueBytes: body.length + 1 });
+    const h = harness({}, { otelMaxBytes: body.length + 1 });
+    h.queue.pause(); // keep the FIFO full until we say so
     expect((await post(h, "/v1/logs", body, JSON_H)).status).toBe(200);
     const full = await post(h, "/v1/logs", body, JSON_H);
     expect(full.status).toBe(503);
     expect(full.headers.get("retry-after")).toBe("5");
     expect(h.otlp.status().rejectedFull).toBe(1);
-    h.flush();
+    expect(h.queue.otelDepth).toBe(1); // the refused batch left nothing behind
+    h.queue.resume();
+    await h.flush();
+    expect(h.events).toHaveLength(1);
     expect((await post(h, "/v1/logs", body, JSON_H)).status).toBe(200);
+  });
+
+  test("a stopped queue refuses OTLP with 503 rather than accepting into the void", async () => {
+    // Covers: R14
+    const h = harness();
+    await h.queue.stop();
+    const res = await post(h, "/v1/logs", logsJson([attr("test.session", "late")]), JSON_H);
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("5");
+  });
+
+  test("OTel bytes queued return to 0 after draining", async () => {
+    // Covers: R14
+    const h = harness();
+    h.queue.pause();
+    const records = Array.from({ length: 7 }, (_, i) => [attr("test.session", `b${i}`)]);
+    expect((await post(h, "/v1/logs", logsJson(...records), JSON_H)).status).toBe(200);
+    expect(h.queue.otelQueuedBytes).toBeGreaterThan(0);
+    expect(Number.isInteger(h.queue.otelQueuedBytes)).toBe(true);
+    h.queue.resume();
+    await h.flush();
+    expect(h.queue.otelQueuedBytes).toBe(0);
+    expect(h.events).toHaveLength(7);
+  });
+
+  test("episode errors are charged against the cap; refused ones are counted, not 503", async () => {
+    // Covers: R17
+    const cap = 3 * ERROR_EVENT_BYTES;
+    const h = harness({}, { otelMaxBytes: cap });
+    h.queue.pause();
+    for (let i = 0; i < 20; i++) {
+      const body = JSON.stringify({
+        resourceLogs: [
+          {
+            resource: { attributes: [attr("service.name", `svc${i}`)] },
+            scopeLogs: [{ logRecords: [{ timeUnixNano: `${T0}000000`, attributes: [] }] }],
+          },
+        ],
+      });
+      const res = await post(h, "/v1/logs", body, JSON_H);
+      expect(res.status).toBe(200);
+      expect(h.queue.otelQueuedBytes).toBeLessThanOrEqual(cap);
+    }
+    expect(h.queue.otelDepth).toBeLessThanOrEqual(3);
+    expect(h.otlp.status().errorsDropped).toBeGreaterThan(0);
+    h.queue.resume();
+    await h.flush();
+    expect(h.queue.otelQueuedBytes).toBe(0);
+  });
+
+  test("hooks drain before OTLP events when both are queued", async () => {
+    // Covers: R14
+    const h = harness();
+    h.queue.pause();
+    expect((await post(h, "/v1/logs", logsJson([attr("test.session", "o")]), JSON_H)).status).toBe(
+      200,
+    );
+    expect(h.queue.enqueueHook("testeng", "{}")).toBe(true);
+    h.queue.resume();
+    await h.flush();
+    expect(h.events.map((e) => e.source)).toEqual(["hook", "otel"]);
   });
 
   test("the request never waits for storage: it answers before the drainer runs", async () => {
     // Covers: R14
     const h = harness();
+    h.queue.pause();
     const res = await post(h, "/v1/logs", logsJson([attr("test.session", "n")]), JSON_H);
     expect(res.status).toBe(200);
-    expect(h.events).toEqual([]); // nothing stored yet: the drain step is still pending
-    h.flush();
+    expect(h.events).toEqual([]); // nothing stored yet: the drainer is held
+    h.queue.resume();
+    await h.flush();
     expect(h.events).toHaveLength(1);
   });
 
   test("a big batch is stored in steps of at most 200 events", async () => {
     // Covers: R14
     const steps: number[] = [];
-    const h = harness({ ingest: (b) => void steps.push(b.length) });
+    const h = harness(
+      {},
+      {
+        ingest: (_db, _deps, b) => {
+          steps.push(b.length);
+          return [];
+        },
+      },
+    );
+    h.queue.pause();
     const records = Array.from({ length: 450 }, (_, i) => [attr("test.session", `s${i}`)]);
     expect((await post(h, "/v1/logs", logsJson(...records), JSON_H)).status).toBe(200);
-    h.flush();
+    h.queue.resume();
+    await h.flush();
     expect(steps).toEqual([200, 200, 50]);
   });
 });
@@ -275,7 +399,7 @@ describe("OTLP routing without service.name (R16, R17)", () => {
     // Covers: R17
     const h = harness();
     expect((await post(h, "/v1/logs", foreign, JSON_H)).status).toBe(200);
-    h.flush();
+    await h.flush();
     const errors = h.events.filter((e) => e.event.kind === "ingest.error");
     expect(errors).toHaveLength(1);
     expect(errors[0]?.event.error?.reason).toBe("unattributable");
@@ -289,7 +413,7 @@ describe("OTLP routing without service.name (R16, R17)", () => {
     for (let i = 0; i < 360; i++) {
       h.clock.now = T0 + i * 5_000;
       await post(h, "/v1/logs", foreign, JSON_H);
-      h.flush();
+      await h.flush();
     }
     expect(h.events.filter((e) => e.event.kind === "ingest.error")).toHaveLength(3);
     expect(h.otlp.status().otelUnattributed).toBe(360);
@@ -300,7 +424,7 @@ describe("OTLP routing without service.name (R16, R17)", () => {
     // Covers: R16, R17
     const h = harness();
     await post(h, "/v1/logs", logsJson([attr("test.session", "mix")], [attr("x", "y")]), JSON_H);
-    h.flush();
+    await h.flush();
     expect(h.events.map((e) => e.event.kind).sort()).toEqual(["ingest.error", "prompt"]);
   });
 
@@ -312,7 +436,7 @@ describe("OTLP routing without service.name (R16, R17)", () => {
     };
     const h = harness({ adapters: [bindAdapter(noSession)] });
     await post(h, "/v1/logs", logsJson([attr("test.session", "z")]), JSON_H);
-    h.flush();
+    await h.flush();
     expect(h.events[0]?.engine).toBe("testeng");
     expect(h.events[0]?.event.sessionId).toBe("unknown");
   });
@@ -424,6 +548,54 @@ describe("startApp: opt-in and busy port (R15, R34)", () => {
       expect(health.status).toBe(200);
       const stats = await fetch(`http://127.0.0.1:${app.server.port}/api/stats`);
       expect(stats.status).toBe(200);
+    } finally {
+      await squatter.stop(true);
+    }
+  });
+
+  async function lanesOf(app: AppHandle): Promise<StatsResponse["lanes"]> {
+    const res = await fetch(`http://127.0.0.1:${app.server.port}/api/stats`);
+    return ((await res.json()) as StatsResponse).lanes;
+  }
+
+  test("/api/stats.lanes.otlp is disabled when the lane is off", async () => {
+    // Covers: R15, R28
+    const app = await start(config({ otlpEnabled: false, otlpPort: 4318 }));
+    const otlp = (await lanesOf(app)).otlp;
+    expect(otlp.state).toBe("disabled");
+    expect(otlp.port).toBe(4318);
+    expect(otlp.requests).toBe(0);
+    expect(otlp.rejectedFull).toBe(0);
+  });
+
+  test("/api/stats.lanes.otlp is listening with port, last received and counters", async () => {
+    // Covers: R15, R28
+    const app = await start(config({ otlpEnabled: true }));
+    const before = (await lanesOf(app)).otlp;
+    expect(before.state).toBe("listening");
+    expect(before.lastReceivedAt).toBeNull();
+    const port = before.port;
+    expect(port).toBe(app.otlpLaneStatus().port);
+    await fetch(`http://127.0.0.1:${port}/v1/logs`, {
+      method: "POST",
+      headers: JSON_H,
+      body: logsJson([attr("service.name", "nobody")]),
+    });
+    const after = (await lanesOf(app)).otlp;
+    expect(after.requests).toBe(1);
+    expect(after.otelUnattributed).toBe(1);
+    expect(after.lastReceivedAt).toEqual(expect.any(Number));
+    expect(after.rejectedFull).toBe(0);
+  });
+
+  test("port-in-use surfaces in /api/stats.lanes.otlp", async () => {
+    // Covers: R15, R28
+    const squatter = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("x") });
+    try {
+      const app = await start(config({ otlpEnabled: true, otlpPort: squatter.port ?? 0 }));
+      const otlp = (await lanesOf(app)).otlp;
+      expect(otlp.state).toBe("port-in-use");
+      expect(otlp.port).toBe(squatter.port ?? 0);
     } finally {
       await squatter.stop(true);
     }

@@ -18,7 +18,6 @@ import {
   createUlidFactory,
   currentCursor,
   EventBus,
-  ingestEvents,
   IngestQueue,
   migrate,
   openDatabase,
@@ -32,12 +31,13 @@ import type {
   ClockFn,
   CrowConfig,
   IntervalScheduler,
+  OtlpLaneStatus,
   TailerSchedulerOptions,
 } from "@crow/core";
 import { ENGINE_ADAPTERS } from "./adapters";
 import { LaneMonitor } from "./lanes";
 import { laneStatus, startOtlpServer } from "./otlp-server";
-import type { OtlpLaneStatus, OtlpServer } from "./otlp-server";
+import type { OtlpServer } from "./otlp-server";
 import { createRequestHandler, MAX_REQUEST_BODY_BYTES } from "./server";
 import { StreamRegistry } from "./sse";
 
@@ -92,8 +92,8 @@ export interface AppHandle {
   readonly server: Server<unknown>;
   readonly bus: EventBus;
   /**
-   * State of the OTLP lane (D15): `disabled`, `listening`, `port-in-use` or `error`. B2 wires it
-   * into `/api/stats.lanes` (and `crow doctor` reads it from there).
+   * State of the OTLP lane (D15): `disabled`, `listening`, `port-in-use` or `error`; the same
+   * value `/api/stats.lanes.otlp` serves (and `crow doctor` reads).
    */
   otlpLaneStatus(): OtlpLaneStatus;
   /**
@@ -128,10 +128,14 @@ export async function startApp(config: CrowConfig, opts: StartAppOptions = {}): 
   const scheduleIntervalFn = opts.scheduleInterval ?? realInterval;
   const streams = new StreamRegistry();
 
-  // --- hook lane (F2a B2): one queue, one drainer; stopped before the HTTP server and the DB ---
+  // --- ingest queue (F2a B2): hooks + OTLP, one drainer; stopped before the HTTP server and the DB ---
+  // The OTLP lane (started in step 5) is read lazily by the monitor for `/api/stats.lanes`.
+  let otlp: OtlpServer | null = null;
+  let otlpStatus: OtlpLaneStatus = laneStatus("disabled", config.otlpPort);
   const lanes = new LaneMonitor(
     ENGINE_ADAPTERS.map((adapter) => adapter.id),
     now,
+    () => otlp?.status() ?? otlpStatus,
   );
   const queue = new IngestQueue({
     db,
@@ -143,7 +147,7 @@ export async function startApp(config: CrowConfig, opts: StartAppOptions = {}): 
     onDrop: (engine) => lanes.hookRejected(engine, "queue-overflow"),
     onStored: (engine) => lanes.hookStored(engine),
   });
-  // --- end hook lane ---
+  // --- end ingest queue ---
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -194,8 +198,6 @@ export async function startApp(config: CrowConfig, opts: StartAppOptions = {}): 
   );
 
   // 5. OTLP lane (D8, R14, R15, R34): opt-in; a busy port never takes the rest down.
-  let otlp: OtlpServer | null = null;
-  let otlpStatus: OtlpLaneStatus = laneStatus("disabled", config.otlpPort);
   if (config.otlpEnabled) {
     try {
       otlp = startOtlpServer({
@@ -204,7 +206,7 @@ export async function startApp(config: CrowConfig, opts: StartAppOptions = {}): 
         adapters: opts.otlpAdapters ?? ENGINE_ADAPTERS,
         now,
         version: SERVER_VERSION,
-        ingest: (events) => bus.publish(ingestEvents(db, { nextId, now, idleMs }, events)),
+        queue,
       });
     } catch (err) {
       const busy = (err as { code?: unknown }).code === "EADDRINUSE";
@@ -224,7 +226,7 @@ export async function startApp(config: CrowConfig, opts: StartAppOptions = {}): 
     async stop(): Promise<void> {
       cancelSweep();
       await tailer.stop();
-      await otlp?.stop();
+      await otlp?.stop(); // stop accepting OTLP first: after queue.stop() it would answer 503
       await queue.stop(); // stop accepting hooks (204, counted) and finish the step in flight
       streams.closeAll();
       server.stop(true);
