@@ -4,7 +4,11 @@ export type {
   FileMatch,
   AgentMetaPatch,
   CrowConfig,
+  HookInput,
+  HookResult,
   JsonValue,
+  MatchSpec,
+  OtelResult,
   LinePos,
   LineResult,
   LineWarning,
@@ -14,7 +18,7 @@ export { bindAdapter } from "./adapter";
 export { EventBus } from "./bus";
 export type { BusListener } from "./bus";
 export { loadConfig } from "./config";
-export type { ConfigEnv } from "./config";
+export type { ConfigEnv, ConfigOverrides } from "./config";
 export type {
   AgentNode,
   ApiErrorResponse,
@@ -35,7 +39,12 @@ export type {
   CrowEvent,
   CrowEventAgent,
   CrowEventError,
+  CrowEventCompact,
   CrowEventHook,
+  CrowEventPermission,
+  CrowEventReported,
+  CrowEventRevision,
+  CrowEventTurn,
   CrowEventTool,
   CrowEventUsage,
   EngineId,
@@ -43,6 +52,7 @@ export type {
   EventSource,
   IngestErrorReason,
 } from "./crow-event";
+export type { FlatOtelRecord, OtelScalar } from "./otel";
 export type { Rec } from "./narrow";
 export { arr, isRec, num, path, str } from "./narrow";
 export { costUsd, MODEL_PRICES, normalizeModelId, priceFor } from "./pricing";
