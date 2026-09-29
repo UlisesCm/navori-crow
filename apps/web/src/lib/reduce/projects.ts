@@ -9,6 +9,7 @@ import type {
   SessionSummary,
   Totals,
 } from "@crow/core/types";
+import { localDay } from "@crow/core/time";
 import { applyMany, applyOne, fromSnapshot, type Cursored } from "./cursor";
 
 /** What the home view renders; `day` and `idleMs` come from the snapshot. */
@@ -21,14 +22,6 @@ export interface ProjectsData {
 export type ProjectsState = Cursored<ProjectsData>;
 
 const UNRESOLVED = "unresolved";
-
-/** Mirrors core's `localDay` (`YYYY-MM-DD`, local time); duplicated because core's runtime pulls in `bun:sqlite`. */
-export function localDay(ts: number): string {
-  const d = new Date(ts);
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${d.getFullYear()}-${mm}-${dd}`;
-}
 
 export function emptyTotals(): Totals {
   return {
@@ -50,7 +43,7 @@ export function projectsFromSnapshot(snapshot: ProjectsResponse): ProjectsState 
   return fromSnapshot({ day: snapshot.day, idleMs: snapshot.idleMs, projects }, snapshot.cursor);
 }
 
-function addUsage(totals: Totals, usage: NonNullable<CrowEvent["usage"]>): Totals {
+export function addUsage(totals: Totals, usage: NonNullable<CrowEvent["usage"]>): Totals {
   return {
     input: totals.input + usage.input,
     output: totals.output + usage.output,
@@ -63,7 +56,8 @@ function addUsage(totals: Totals, usage: NonNullable<CrowEvent["usage"]>): Total
   };
 }
 
-function baseName(path: string): string {
+/** Last path segment of a project path (display name). */
+export function baseName(path: string): string {
   const parts = path.split(/[\\/]/).filter((s) => s !== "");
   return parts[parts.length - 1] ?? UNRESOLVED;
 }
@@ -85,7 +79,7 @@ function newSession(e: CrowEvent, id: string): SessionSummary {
   };
 }
 
-function updateSession(s: SessionSummary, e: CrowEvent): SessionSummary {
+export function updateSession(s: SessionSummary, e: CrowEvent): SessionSummary {
   const next: SessionSummary = { ...s, lastEventAt: Math.max(s.lastEventAt, e.ts) };
   if (e.kind === "session.end") {
     next.status = "ended";
@@ -154,6 +148,21 @@ export function applyManyToProjects(
   events: readonly CrowEvent[],
 ): ProjectsState {
   return applyMany(state, events, foldEvent);
+}
+
+/**
+ * Midnight rollover (D16): once the local day of `nowMs` differs from
+ * `data.day`, "today" restarts at zero for every card. The clock is injected,
+ * so the reducer stays pure; returns the same state when the day is unchanged.
+ */
+export function rollDay(state: ProjectsState, nowMs: number): ProjectsState {
+  const day = localDay(nowMs);
+  if (day === state.value.day) return state;
+  const projects: Record<string, ProjectSummary> = {};
+  for (const [key, p] of Object.entries(state.value.projects)) {
+    projects[key] = { ...p, today: emptyTotals() };
+  }
+  return { ...state, value: { ...state.value, day, projects } };
 }
 
 /** Cards ordered most-recently-active first. */
