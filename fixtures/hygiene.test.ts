@@ -181,9 +181,9 @@ function anonymizedFixtureFiles(): string[] {
 
 describe("fixtures hygiene (risk R2): structural contract on anonymized fixtures", () => {
   test("cc-*/ and codex/* fixtures only carry markers/pseudonyms/timestamps/the fixture cwd/short enums", () => {
-    // Covers: risk R2. No `fixtures/claude/cc-*/` or `fixtures/codex/*/` exists yet at this stage
-    // (B4.T3 stage 2 adds the real fixture) — this walk is vacuous until then, by design.
+    // Covers: risk R2. Walks `fixtures/claude/cc-*/` and every `fixtures/codex/<version>/` rollout.
     const files = anonymizedFixtureFiles();
+    expect(files.some((f) => f.includes(`${join("fixtures", "codex")}/`))).toBe(true); // not vacuous
     const violations: string[] = [];
     for (const file of files) {
       const label = relative(FIXTURES_ROOT, file);
