@@ -36,7 +36,7 @@ Lotes de 1–3 tareas; cada tarea declara los `R<n>` que cubre y sus tests (todo
 
 ## B6 · CLI (depende de B2 y B4)
 
-- [ ] **B6.T1** (R20, R34) — `packages/cli` con `crow up` mínimo (`--otlp`), escritura segura (`fs-safe`: a través de symlinks, backups 0600 con rotación), diff enmascarado y el script de hook de crow con fail-open. · tests: `packages/cli/src/hook-script.test.ts`, `config.test.ts`.
+- [x] **B6.T1** (R20, R34) — `packages/cli` con `crow up` mínimo (`--otlp`), escritura segura (`fs-safe`: a través de symlinks, backups 0600 con rotación), diff enmascarado y el script de hook de crow con fail-open. · tests: `packages/cli/src/hook-script.test.ts`, `config.test.ts`.
 - [ ] **B6.T2** (R21, R22, R23, R24, R25, R26, R27) — `crow attach|detach <claude|codex>` por unidades (D13, D14): transporte de Claude elegido en B0, Codex anidado `[[hooks.X.hooks]]` con script confiable, sin flags de contenido, idempotente, aborta ante config ilegible, `detach` conserva e informa las entradas editadas. · tests: `attach.test.ts`, `attach-*.test.ts`, `detach-*.test.ts`.
 - [ ] **B6.T3** (R15, R28) — `crow doctor`: carriles por motor, último hook y registro recibidos, confianza pendiente de Codex, `port-in-use`, collector ajeno, flags de contenido y conflicto con `OTEL_*` del shell. · tests: `doctor.test.ts`.
 
