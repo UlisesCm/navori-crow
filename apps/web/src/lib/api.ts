@@ -50,10 +50,17 @@ export const fetchEvents = (project: string, limit = 200): Promise<EventsRespons
 export const fetchSessionDetail = (id: string): Promise<SessionDetailResponse> =>
   getJson(`/api/sessions/${encodeURIComponent(id)}`);
 
-/** `GET /api/sessions/:id/events?after=&limit=` (paginated timeline, B6.T2). */
-export const fetchSessionEvents = (
+/**
+ * `GET /api/sessions/:id/events?tail=1|before=&limit=` — the latest page of a
+ * session (`before` omitted) or the one right before `before`; ascending order,
+ * `hasMore` = older events exist.
+ */
+export const fetchSessionEventsBackward = (
   id: string,
-  after?: string,
+  before?: string,
   limit = 500,
 ): Promise<SessionEventsResponse> =>
-  getJson(`/api/sessions/${encodeURIComponent(id)}/events`, { after, limit });
+  getJson(`/api/sessions/${encodeURIComponent(id)}/events`, {
+    ...(before === undefined ? { tail: 1 } : { before }),
+    limit,
+  });

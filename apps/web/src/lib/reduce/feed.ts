@@ -8,6 +8,8 @@ import { applyMany, applyOne, fromSnapshot, type Cursored } from "./cursor";
 
 /** Render/retention cap of the session timeline (D16). */
 export const TIMELINE_WINDOW = 500;
+/** Hard retention ceiling of the timeline after "mostrar anteriores" (D16): the oldest events drop beyond it. */
+export const LOADED_CEILING = 5_000;
 /** Retention cap of a split column. */
 export const COLUMN_WINDOW = 200;
 
@@ -62,7 +64,10 @@ export function applyManyToFeed(state: FeedState, events: readonly CrowEvent[]):
 /**
  * Merges older events (a REST page) into the window without touching the
  * cursor and without duplicates. `complete` says the caller reached the start
- * of the session, which lifts the cap so the merged history is kept.
+ * of the session. Once older history is loaded the live cap rises to
+ * {@link LOADED_CEILING}: live events append without dropping what the user
+ * loaded, and only beyond the ceiling the oldest go (flagging `truncated`,
+ * which re-enables "mostrar anteriores").
  */
 export function mergeOlder(
   state: FeedState,
@@ -70,15 +75,12 @@ export function mergeOlder(
   complete: boolean,
 ): FeedState {
   const data = state.value;
-  const merged = normalize([...events, ...data.events]);
-  return {
-    ...state,
-    value: {
-      events: merged,
-      max: complete ? null : data.max,
-      truncated: complete ? false : data.truncated,
-    },
-  };
+  const merged = trim({
+    events: normalize([...events, ...data.events]),
+    max: LOADED_CEILING,
+    truncated: !complete,
+  });
+  return { ...state, value: merged };
 }
 
 /** Routes a stream event to the column of its project (split view, one cursor per column). */
