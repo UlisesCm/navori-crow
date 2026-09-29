@@ -21,6 +21,7 @@ import {
   IngestQueue,
   migrate,
   openDatabase,
+  promoteHeldUsage,
   realInterval,
   sweepIdle,
   TailerScheduler,
@@ -192,10 +193,11 @@ export async function startApp(config: CrowConfig, opts: StartAppOptions = {}): 
   });
   await tailer.start();
 
-  const cancelSweep = scheduleIntervalFn(
-    () => sweepIdle(db, now, idleMs),
-    opts.sweepIntervalMs ?? 30_000,
-  );
+  const cancelSweep = scheduleIntervalFn(() => {
+    sweepIdle(db, now, idleMs);
+    // D6: promote or discard held OTel usage, then publish what became counted.
+    bus.publish(promoteHeldUsage(db, { nextId, now, idleMs }));
+  }, opts.sweepIntervalMs ?? 30_000);
 
   // 5. OTLP lane (D8, R14, R15, R34): opt-in; a busy port never takes the rest down.
   if (config.otlpEnabled) {

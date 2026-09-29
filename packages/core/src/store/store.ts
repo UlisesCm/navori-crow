@@ -469,6 +469,9 @@ function totalsParams(
  * Prices and weighs a usage block, adds it to the session/agent/day totals in
  * the same transaction (R4), and stamps the session's and agent's `model`.
  * Returns the usage with `costUsd`/`weightedTokens` stamped (R20, R21).
+ *
+ * `sign = -1` applies the exact negation (D6 correction of a promoted OTel call): every component,
+ * the cost, the weight and `t_unpriced` are subtracted, and the model stamp is left alone.
  */
 function applyUsage(
   db: Database,
@@ -477,10 +480,13 @@ function applyUsage(
   projectKey: string,
   usage: CrowEventUsage,
   ts: number,
+  sign: 1 | -1 = 1,
 ): CrowEventUsage {
   const priced = computeCostUsd(usage);
   const weighted = weightedTokens(usage, usage.model ?? null);
-  const params = totalsParams(usage, priced, weighted);
+  const positive = totalsParams(usage, priced, weighted);
+  // `0 - x` (not `-x`) so a zero component stays +0 in the stored JSON and in equality checks.
+  const params = (sign === 1 ? positive : positive.map((v) => 0 - v)) as TotalsParams;
 
   db.query(`UPDATE sessions SET ${TOTALS_INCREMENT_SET} WHERE id = ?`).run(...params, sessionId);
   db.query(`UPDATE agents SET ${TOTALS_INCREMENT_SET} WHERE id = ?`).run(...params, agentRowKey);
@@ -492,12 +498,285 @@ function applyUsage(
     `UPDATE project_daily SET ${TOTALS_INCREMENT_SET} WHERE project_key = ? AND day = ?`,
   ).run(...params, projectKey, day);
 
+  if (sign === -1) {
+    return {
+      input: 0 - usage.input,
+      output: 0 - usage.output,
+      cacheRead: 0 - usage.cacheRead,
+      cacheCreation: 0 - usage.cacheCreation,
+      cacheCreation1h: 0 - (usage.cacheCreation1h ?? 0),
+      model: usage.model,
+      costUsd: priced === undefined ? undefined : 0 - priced,
+      weightedTokens: 0 - weighted,
+    };
+  }
+
   if (usage.model) {
     db.query("UPDATE sessions SET model = ? WHERE id = ?").run(usage.model, sessionId);
     db.query("UPDATE agents SET model = ? WHERE id = ?").run(usage.model, agentRowKey);
   }
 
   return { ...usage, costUsd: priced, weightedTokens: weighted };
+}
+
+// ---------------------------------------------------------------------------
+// OTel usage ledger (F2a D6, R12)
+// ---------------------------------------------------------------------------
+
+/** How long an OTel usage candidate waits for the transcript to bring the same call (D6). */
+export const OTEL_HOLD_MS = 30_000;
+
+interface LedgerSqlRow {
+  key: string;
+  scope: "call" | "session";
+  ts: number;
+  model: string | null;
+  u_input: number;
+  u_output: number;
+  u_cache_read: number;
+  u_cache_creation: number;
+  u_cache_creation_1h: number;
+}
+
+const LEDGER_COLUMNS =
+  "key, scope, ts, model, u_input, u_output, u_cache_read, u_cache_creation, u_cache_creation_1h";
+
+/** The usage a ledger row holds, in the shape `applyUsage` takes. */
+function ledgerUsage(r: LedgerSqlRow): CrowEventUsage {
+  return {
+    input: r.u_input,
+    output: r.u_output,
+    cacheRead: r.u_cache_read,
+    cacheCreation: r.u_cache_creation,
+    cacheCreation1h: r.u_cache_creation_1h,
+    model: r.model ?? undefined,
+  };
+}
+
+function setLedgerState(
+  db: Database,
+  sessionRowId: string,
+  key: string,
+  state: "counted" | "dropped",
+): void {
+  db.query("UPDATE otel_usage SET state = ? WHERE session_id = ? AND key = ?").run(
+    state,
+    sessionRowId,
+    key,
+  );
+}
+
+/** `true` if the transcript already marked `r:<call>` for this session (read-only). */
+function hasCallMark(db: Database, nativeSessionId: string, key: string): boolean {
+  return (
+    db
+      .query("SELECT 1 FROM dedupe WHERE source = 'transcript' AND session_id = ? AND key = ?")
+      .get(nativeSessionId, `r:${key}`) !== null
+  );
+}
+
+/** The session facts the ledger needs to stamp a `usage` event. */
+interface LedgerSession {
+  id: string;
+  engine: EngineId;
+  nativeId: string;
+  projectKey: string;
+}
+
+/** Stores a `usage` fact published by the ledger (a counted OTel call or its negative correction). */
+function ledgerUsageEvent(
+  db: Database,
+  deps: IngestBatchDeps,
+  session: LedgerSession,
+  ts: number,
+  usage: CrowEventUsage,
+  seq: number,
+): CrowEvent {
+  const event: CrowEvent = {
+    id: deps.nextId(),
+    engine: session.engine,
+    source: "otel",
+    projectKey: session.projectKey,
+    projectPath: projectPathFor(db, session.projectKey),
+    sessionId: session.nativeId,
+    agentId: null,
+    parentAgentId: null,
+    kind: "usage",
+    ts,
+    seq,
+    usage,
+  };
+  // Row only: a ledger usage event never moves session status or `last_event_at` (its `ts` is the
+  // OTel record's, possibly old), and the totals were already applied by the caller.
+  insertEventRow(db, event, null);
+  return event;
+}
+
+/**
+ * D6, OTel arrival: decides whether `event.otelUsage` may become a candidate. It is not held when
+ * the transcript already covers it (`r:<id>` mark for a call; `tu_keyed`/`tu_unkeyed` for the
+ * session scope; `tu_unkeyed` always, which is also how a migrated F1 session never counts OTel).
+ * Otherwise it waits in the ledger as `held` for {@link OTEL_HOLD_MS}. `INSERT OR IGNORE` on the PK
+ * makes a retried batch, or a second record for the same call, a no-op.
+ */
+function ledgerOtelUsage(
+  db: Database,
+  deps: IngestBatchDeps,
+  sessionRowId: string,
+  event: PartialCrowEvent,
+  otelUsage: CrowEventUsage,
+  recordHash: string,
+): void {
+  const scope = event.usageCallKey !== undefined ? "call" : "session";
+  const key = event.usageCallKey ?? `rec:${recordHash}`;
+  const marks = db
+    .query<{ tu_keyed: number; tu_unkeyed: number }, [string]>(
+      "SELECT tu_keyed, tu_unkeyed FROM sessions WHERE id = ?",
+    )
+    .get(sessionRowId);
+  if (marks === null || marks.tu_unkeyed === 1) return;
+  if (scope === "session" && marks.tu_keyed === 1) return;
+  if (scope === "call" && hasCallMark(db, event.sessionId, key)) return;
+  const u = usageComponents(otelUsage);
+  db.query(
+    `INSERT OR IGNORE INTO otel_usage
+       (session_id, key, scope, state, hold_until, ts, model,
+        u_input, u_output, u_cache_read, u_cache_creation, u_cache_creation_1h)
+     VALUES (?, ?, ?, 'held', ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    sessionRowId,
+    key,
+    scope,
+    deps.now() + OTEL_HOLD_MS,
+    event.ts,
+    otelUsage.model ?? null,
+    u.input,
+    u.output,
+    u.cacheRead,
+    u.cacheCreation,
+    u.cacheCreation1h,
+  );
+}
+
+/**
+ * D6, transcript arrival with usage: leaves the `r:<id>` mark and `tu_keyed` (or `tu_unkeyed` when
+ * the line has no call key), then reconciles the ledger. A `held` row for the same call (for an
+ * unkeyed line: any `held` row of the session) is dropped silently; a `counted` one is REPLACED:
+ * its exact negation is applied to the main agent and the record's day, and a negative `usage`
+ * fact is returned for publication. The transcript's own usage was already counted by the caller.
+ * A keyed line runs the reconciliation only the first time its call key is seen (the mark), so the
+ * streamed chunks of one call don't repeat it.
+ */
+function reconcileTranscriptUsage(
+  db: Database,
+  deps: IngestBatchDeps,
+  engine: EngineId,
+  event: PartialCrowEvent,
+  sessionRowId: string,
+  projectKey: string,
+  seq: number,
+): CrowEvent[] {
+  let rows: Array<LedgerSqlRow & { state: string }>;
+  if (event.usageCallKey !== undefined) {
+    db.query("UPDATE sessions SET tu_keyed = 1 WHERE id = ?").run(sessionRowId);
+    if (!insertDedupe(db, "transcript", event.sessionId, `r:${event.usageCallKey}`, null)) {
+      return [];
+    }
+    rows = db
+      .query<LedgerSqlRow & { state: string }, [string, string]>(
+        `SELECT ${LEDGER_COLUMNS}, state FROM otel_usage
+         WHERE session_id = ? AND key = ? AND state IN ('held','counted')`,
+      )
+      .all(sessionRowId, event.usageCallKey);
+  } else {
+    db.query("UPDATE sessions SET tu_unkeyed = 1 WHERE id = ?").run(sessionRowId);
+    rows = db
+      .query<LedgerSqlRow & { state: string }, [string]>(
+        `SELECT ${LEDGER_COLUMNS}, state FROM otel_usage
+         WHERE session_id = ? AND state IN ('held','counted') ORDER BY ts ASC, key ASC`,
+      )
+      .all(sessionRowId);
+  }
+
+  const corrections: CrowEvent[] = [];
+  const session: LedgerSession = {
+    id: sessionRowId,
+    engine,
+    nativeId: event.sessionId,
+    projectKey,
+  };
+  for (const row of rows) {
+    if (row.state === "counted") {
+      const mainKey = ensureAgent(db, sessionRowId, null, null, row.ts);
+      const negative = applyUsage(
+        db,
+        sessionRowId,
+        mainKey,
+        projectKey,
+        ledgerUsage(row),
+        row.ts,
+        -1,
+      );
+      corrections.push(ledgerUsageEvent(db, deps, session, row.ts, negative, seq));
+    }
+    setLedgerState(db, sessionRowId, row.key, "dropped");
+  }
+  return corrections;
+}
+
+/**
+ * D6 promotion (sweeper tick, every 30 s): re-checks each `held` row whose `hold_until` has passed
+ * against `deps.now()` (the injected clock). If the transcript now covers the call (or, for a
+ * session-scope row, the session) the row is `dropped` silently; otherwise it is `counted`: applied
+ * to the session's MAIN agent (OTel carries no agent id) with the record's `ts`, priced with crow's
+ * table (not OTel's `cost_usd`) and published as a `usage` fact with `source: "otel"`. Returns the
+ * facts to publish after the transaction, in commit order.
+ */
+export function promoteHeldUsage(db: Database, deps: IngestBatchDeps): CrowEvent[] {
+  const promoted: CrowEvent[] = [];
+  db.transaction(() => {
+    const due = db
+      .query<LedgerSqlRow & { session_id: string }, [number]>(
+        `SELECT session_id, ${LEDGER_COLUMNS} FROM otel_usage
+         WHERE state = 'held' AND hold_until <= ? ORDER BY hold_until ASC, session_id ASC, key ASC`,
+      )
+      .all(deps.now());
+    for (const row of due) {
+      const sessionRowId = row.session_id;
+      const s = db
+        .query<
+          {
+            engine: EngineId;
+            native_id: string;
+            project_key: string;
+            tu_keyed: number;
+            tu_unkeyed: number;
+          },
+          [string]
+        >("SELECT engine, native_id, project_key, tu_keyed, tu_unkeyed FROM sessions WHERE id = ?")
+        .get(sessionRowId);
+      const covered =
+        s === null ||
+        s.tu_unkeyed === 1 ||
+        (row.scope === "session" && s.tu_keyed === 1) ||
+        (row.scope === "call" && hasCallMark(db, s.native_id, row.key));
+      if (s === null || covered) {
+        setLedgerState(db, sessionRowId, row.key, "dropped");
+        continue;
+      }
+      const mainKey = ensureAgent(db, sessionRowId, null, null, row.ts);
+      const usage = applyUsage(db, sessionRowId, mainKey, s.project_key, ledgerUsage(row), row.ts);
+      setLedgerState(db, sessionRowId, row.key, "counted");
+      const session: LedgerSession = {
+        id: sessionRowId,
+        engine: s.engine,
+        nativeId: s.native_id,
+        projectKey: s.project_key,
+      };
+      promoted.push(ledgerUsageEvent(db, deps, session, row.ts, usage, 0));
+    }
+  }).immediate();
+  return promoted;
 }
 
 /** Builds the full stored `CrowEvent`, stamping what only the store can know and dropping the store-only fields. */
@@ -972,6 +1251,17 @@ function ingestInTx(
       } else {
         usageForStorage = applyUsage(db, sessionId, agentRowKey, projectKey, usage, event.ts);
       }
+    }
+
+    // D6: OTel candidate usage goes to the ledger (never counted directly); transcript usage marks
+    // the call and reconciles whatever OTel already held or counted for it.
+    if (event.otelUsage !== undefined) {
+      ledgerOtelUsage(db, deps, sessionId, event, event.otelUsage, lineHash);
+    }
+    if (source === "transcript" && event.usage !== undefined) {
+      stored.push(
+        ...reconcileTranscriptUsage(db, deps, engine, event, sessionId, projectKey, pos.offset),
+      );
     }
 
     // A usage-only continuation line (no text, e.g. a streamed `tool_use`-only assistant chunk,
