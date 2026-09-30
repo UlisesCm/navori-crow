@@ -1,4 +1,4 @@
-# navori:managed start id="subagent-stop-handoff-base" hash="0c0fda50" version="0.10.0" source="@navori/core"
+# navori:managed start id="subagent-stop-handoff-base" hash="aacc7aa3" version="0.11.0" source="@navori/core"
 #!/usr/bin/env bash
 #
 # PostToolUse(`Agent`|`Task`) lifecycle hook — handoff validator.
@@ -83,15 +83,156 @@ navori_audit_phase="PostToolUse"
 # audit-mode is on, and jq may not exist. Keyed by session AND repo so two
 # sessions never silence each other. In the OS temp dir, so nothing lands in the
 # user's tree and a reboot is a clean slate.
-navori_handoff_key="anon"
-case "$payload" in
-  *'"session_id"'*)
-    navori_handoff_key=${payload#*\"session_id\":}
-    navori_handoff_key=${navori_handoff_key# }
-    navori_handoff_key=${navori_handoff_key#\"}
-    navori_handoff_key=${navori_handoff_key%%\"*}
-    ;;
+# A raw, unexpanded asset must remain advisory rather than exiting 127.
+# Rendered includes replace these no-ops with the shared Spec 0035 adapter.
+payload_field() { :; }
+nv_subagent_type() { :; }
+# Shared hook boilerplate — inlined into each hook at render time (see the
+# include directive in the source scripts + lib/render/hook-includes.ts). Single source
+# of truth for the sibling gate scripts; DO NOT copy this body back into a hook
+# by hand (that is the drift #225/#261 removed).
+#
+# PreToolUse(Bash) passes the tool input on stdin. Read one field out of it
+# WITHOUT hard-depending on jq (NOT preinstalled on macOS): try jq, then node
+# (Claude Code's own runtime), then a best-effort sed unwrap on the leaf key.
+# Nothing extracted → empty output, and each caller decides what that means (the
+# gate scripts scan defensively; guard-destructive waves the command through).
+#
+# $1 is a dotted path written HERE, never user input — the payload is the data.
+# Generic on purpose: `.cwd` feeds the worktree resolver of #454 through the
+# SAME hardened cascade instead of a second copy of it.
+#
+# The sed fallback reads a JSON string through its first unescaped quote. JSON
+# object member order is not a host contract: `command` can precede `cwd`, so a
+# greedy capture to the last quote would swallow the rest of the payload when
+# neither jq nor node is available.
+# `${payload-$(cat)}` (unset test, not `:-`) rather than an unconditional
+# `payload=$(cat)`: a caller that already captured stdin itself (spec 0035 —
+# `managed-drift-watch.sh` needs the audit recorder's session_id/cwd even on
+# tool names this hook does not otherwise read) keeps that value, empty or
+# not, instead of this partial re-reading an already-drained pipe and
+# clobbering it with "".
+payload=${payload-$(cat)}
+payload_field() {
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$payload" | jq -r ".$1 // empty" 2>/dev/null && return 0
+  fi
+  if command -v node >/dev/null 2>&1; then
+    printf '%s' "$payload" | node -e 'let s="";const p=process.argv[1].split(".");process.stdin.on("data",c=>s+=c).on("end",()=>{try{let v=JSON.parse(s);for(const k of p)v=v?.[k];process.stdout.write(String(v??""))}catch{}})' "$1" 2>/dev/null && return 0
+  fi
+  printf '%s' "$payload" | sed -nE "s/.*\"${1##*.}\"[[:space:]]*:[[:space:]]*\"(([^\"\\]|\\.)*)\".*/\\1/p"
+}
+extract_cmd() {
+  payload_field tool_input.command
+}
+# NOT called here on purpose. `payload_field` may spawn a process, and
+# `routing-watch.sh` — which includes this partial and runs after EVERY tool call
+# in every session — never reads `cmd`. Each consumer that wants it calls
+# `extract_cmd` itself, at the point where it already knows it needs it.
+# Spec 0035 D2 — the single payload adapter shared by every hook that needs an
+# engine-specific value. Inlined into each hook at render time (see the
+# include directive in the source scripts + lib/render/hook-includes.ts).
+# Single source of truth for the Claude/Codex normalization; DO NOT copy this
+# body back into a hook by hand or branch on the engine inside a hook — D2
+# rejected per-script `if codex …` branches (12 copies of the same logic,
+# each one a place to drift).
+#
+# `nv_engine` is decided by WHERE THE HOOK SCRIPT LIVES ON DISK, not by the
+# payload's shape (a `turn_id`/`apply_patch` sniff breaks the day Claude ships
+# a field with the same name — see design.md's "Descartado") and not by an
+# env var prefix on the registered command (that would change the `command`
+# string Codex hashes for `trusted_hash`, un-approving every hook a repo
+# already trusted — see hook-registrations.ts's module doc). The registered
+# command is always `bash ".../.codex/hooks/<script>.sh"` or
+# `bash "$CLAUDE_PROJECT_DIR/.claude/hooks/<script>.sh"`. `$0` — not
+# `BASH_SOURCE`, which zsh (#391: hooks run under bash AND zsh) leaves unset
+# under `set -u` — is the path the invoking shell was given, and
+# `comment-draft-confirm.sh` already established this exact pattern.
+#
+# Depends on `payload`/`payload_field` (the `extract-cmd` partial): include
+# `extract-cmd` in the same script whenever this partial's helpers are used —
+# `payload_field` is only CALLED here (inside functions), never at top level,
+# so include order between the two partials does not matter.
+case "$0" in
+  *".codex/hooks/"*) nv_engine=codex ;;
+  *) nv_engine=claude ;;
 esac
+
+if [ "$nv_engine" = codex ]; then
+  nv_cwd=$(payload_field cwd)
+  # `cwd` is the session's working dir, which may be a workspace subdir in a
+  # monorepo; the project root is always the git toplevel from there. Falls
+  # back to the raw cwd outside a git work tree rather than failing closed.
+  nv_project_dir=$(git -C "${nv_cwd:-.}" rev-parse --show-toplevel 2>/dev/null) || nv_project_dir=${nv_cwd:-.}
+else
+  nv_project_dir=${CLAUDE_PROJECT_DIR:-}
+fi
+
+# Runtime handoffs have one engine-neutral home. The caller composes this
+# relative path with its checkout root; legacy roots remain readable only.
+nv_progress_dir=".navori/state/handoffs"
+
+# The Claude-equivalent tool name for the CURRENT PreToolUse/PostToolUse
+# payload (D2: apply_patch -> Edit, spawn_agent -> Agent, everything else
+# unchanged — `mcp__…` names and `Bash` already match on both engines).
+nv_tool() {
+  local raw
+  raw=$(payload_field tool_name)
+  if [ "$nv_engine" = codex ]; then
+    case "$raw" in
+      apply_patch) printf 'Edit' ;;
+      spawn_agent) printf 'Agent' ;;
+      *) printf '%s' "$raw" ;;
+    esac
+  else
+    printf '%s' "$raw"
+  fi
+}
+
+# Paths the current tool call touches, one per line (possibly none). Claude
+# carries them as `tool_input.file_path` / `tool_input.notebook_path`; Codex's
+# `apply_patch` has no such field — the whole patch is `tool_input.command`,
+# and the paths live in its `*** Add File:` / `*** Update File:` /
+# `*** Delete File:` / `*** Move to:` headers (codex-rs's apply_patch parser).
+nv_edited_paths() {
+  if [ "$nv_engine" = codex ]; then
+    payload_field tool_input.command | sed -nE \
+      's/^\*\*\* (Add File|Update File|Delete File|Move to): (.*)$/\2/p'
+  else
+    local fp nb
+    fp=$(payload_field tool_input.file_path)
+    nb=$(payload_field tool_input.notebook_path)
+    [ -n "$fp" ] && printf '%s\n' "$fp"
+    [ -n "$nb" ] && printf '%s\n' "$nb"
+  fi
+}
+
+# The subagent type of the current call. Claude: `tool_input.subagent_type`
+# (PreToolUse Agent/Task). Codex: `tool_input.agent_type` in PreToolUse
+# (spawn_agent), or the top-level `agent_type` Codex adds to SubagentStop.
+nv_subagent_type() {
+  if [ "$nv_engine" = codex ]; then
+    local t
+    t=$(payload_field tool_input.agent_type)
+    [ -n "$t" ] || t=$(payload_field agent_type)
+    printf '%s' "$t"
+  else
+    payload_field tool_input.subagent_type
+  fi
+}
+
+# Deliberately NO `nv_emit_context` helper here. `hook-output-contract.test.ts`
+# ("los partials no hablan con el host, solo escriben al log") holds every
+# `_partials/*.sh` file to zero host-output vocabulary — a partial is inlined
+# BEFORE the per-script, per-event output contract is known, so it must never
+# construct `hookSpecificOutput`/`systemMessage` itself. Every hook this spec
+# touches already builds its own JSON at its own call site (unchanged by D2);
+# a script whose Claude/Codex registrations differ in event name (D1: e.g.
+# `subagent-stop-handoff` is PostToolUse under Claude, SubagentStop under
+# Codex) is unaffected in practice — Codex does not honor `additionalContext`
+# on `SubagentStop` at all (codex-research.md), so `systemMessage` is what a
+# human sees there regardless of which literal `hookEventName` the JSON claims.
+navori_handoff_key=$(payload_field session_id)
 case "$navori_handoff_key" in
   "" | *[!A-Za-z0-9_-]*) navori_handoff_key="anon" ;;
 esac
@@ -414,14 +555,9 @@ navori_audit_on_exit() {
 trap navori_audit_on_exit EXIT
 
 
-# Resolve the progress dirs. `placeHook` copies this body VERBATIM for every
-# engine — it is never retargeted the way prose assets are (#389) — so the hook
-# has to know every engine's path itself or it silently no-ops there: under
-# Codex the handoff lives in `.codex/progress/` (what `compat.ts` rewrites
-# `.claude/progress/` into), and this loop used to stop at two names it would
-# never find. Bare `progress/` stays as the fallback for a repo that relocates
-# it. (Literals, not interpolated: `progress.dir` isn't exposed to the render
-# interpolator — same choice as session-start-context.sh.)
+# Resolve the neutral handoff root plus the two one-release legacy roots.
+# `placeHook` copies this body verbatim for every engine, so no engine-specific
+# retargeting is involved. Bare `progress/` remains a historical fallback.
 #
 # EVERY existing dir is scanned, not the first one found: a repo that renders
 # both engines has both, and picking one by probe order would make the hook
@@ -429,7 +565,7 @@ trap navori_audit_on_exit EXIT
 # string: word-splitting a `$dirs` string is a no-op under zsh, which is how the
 # receipt backstop silently stopped scanning (#344).
 dirs=()
-for d in ".claude/progress" ".codex/progress" "progress"; do
+for d in ".navori/state/handoffs" ".claude/progress" ".codex/progress" "progress"; do
   [ -d "$d" ] && dirs+=("$d")
 done
 [ ${#dirs[@]} -gt 0 ] || exit 0
@@ -440,18 +576,9 @@ is_blank() { ! grep -q '[^[:space:]]' "$1" 2>/dev/null; }
 problems=""
 note() { problems="${problems}${problems:+; }$1"; }
 
-# One dotted-path read out of `$payload` (already drained above). Same
-# jq-free node→sed cascade every other hook in this stack uses to stay off a
-# preinstalled-jq dependency — `_partials/extract-cmd.sh`'s `payload_field`,
-# minus its own `payload=$(cat)`: this script already read stdin once, at the
-# top, and a second `cat` here would read nothing.
-navori_field() {
-  if command -v node >/dev/null 2>&1; then
-    printf '%s' "$payload" | node -e 'let s="";const p=process.argv[1].split(".");process.stdin.on("data",c=>s+=c).on("end",()=>{try{let v=JSON.parse(s);for(const k of p)v=v?.[k];process.stdout.write(String(v??""))}catch{}})' "$1" 2>/dev/null && return 0
-  fi
-  printf '%s' "$payload" | sed -nE "s/.*\"${1##*.}\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\\1/p"
-}
-navori_subagent_type=$(navori_field tool_input.subagent_type)
+# Spec 0035 D2 owns Claude/Codex subagent normalization and the single stdin
+# drain through extract-cmd; this hook must not grow a second payload parser.
+navori_subagent_type=$(nv_subagent_type)
 
 # R2's contract: `impl_<feature>.json` must parse and carry every required key
 # with a valid `status`. Validated with node (already required by navori) → a
@@ -628,8 +755,6 @@ if [ "$navori_handoff_prev" = "$problems" ]; then
   navori_audit_reason="$problems"
   exit 0
 fi
-printf '%s\n' "$problems" >"$navori_handoff_stamp" 2>/dev/null || true
-
 msg="navori: handoff(s) de subagente incompletos — ${problems}. Revisa que el reporte quedó bien escrito antes de consolidarlo."
 
 # BOTH channels, and they are not redundant: `additionalContext` is the one that
@@ -638,13 +763,21 @@ msg="navori: handoff(s) de subagente incompletos — ${problems}. Revisa que el 
 # because it asks for an action; before #774 it went out on the user channel
 # alone, so it asked the model for something the model never heard.
 #
-# Serialized safely: node (best escaping) → jq → give up (exit 0). `problems`
-# carries file paths from the repo, so neither branch may build the JSON by
-# hand.
+# Codex SubagentStop accepts systemMessage, not Claude's PostToolUse context.
+# A failed serializer must not stamp an undelivered warning as delivered.
+output=""
 if command -v node >/dev/null 2>&1; then
-  MSG="$msg" node -e 'process.stdout.write(JSON.stringify({systemMessage:process.env.MSG,hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:process.env.MSG}}))'
-elif command -v jq >/dev/null 2>&1; then
-  jq -n --arg m "$msg" '{systemMessage:$m,hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$m}}'
+  output=$(MSG="$msg" node -e 'const m=process.env.MSG;process.stdout.write(JSON.stringify(process.argv[1]==="codex"?{systemMessage:m}:{systemMessage:m,hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:m}}))' "${1:-}" 2>/dev/null) || output=""
+fi
+if [ -z "$output" ] && command -v jq >/dev/null 2>&1; then
+  if [ "${1:-}" = "codex" ]; then
+    output=$(jq -n --arg m "$msg" '{systemMessage:$m}' 2>/dev/null) || output=""
+  else
+    output=$(jq -n --arg m "$msg" '{systemMessage:$m,hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$m}}' 2>/dev/null) || output=""
+  fi
+fi
+if [ -n "$output" ] && printf '%s\n' "$output"; then
+  printf '%s\n' "$problems" >"$navori_handoff_stamp" 2>/dev/null || true
 fi
 navori_audit_verdict="dirty"
 navori_audit_reason="$problems"

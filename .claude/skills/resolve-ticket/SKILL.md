@@ -9,12 +9,12 @@ metadata:
   maxWordsComposed: 750
 ---
 
-<!-- navori:managed id="resolve-ticket" hash="f90662b3" version="0.10.0" source="@navori/core" fmkeys="name,description,metadata" -->
+<!-- navori:managed id="resolve-ticket" hash="301a33e6" version="0.11.0" source="@navori/core" fmkeys="name,description,metadata" -->
 # resolve-ticket — 6-phase pipeline
 
 ## Pipeline
 
-Agents and skills chained by objective gates: what one phase pays for in tokens is written down for the next. Each phase writes to `.claude/progress/`; the gate is blocking. `scout` is used on demand inside any phase, not as a phase of its own.
+Agents and skills chained by objective gates: what one phase pays for in tokens is written down for the next. Each phase writes to `.navori/state/handoffs/`; the gate is blocking. `scout` is used on demand inside any phase, not as a phase of its own.
 
 | Phase | Who covers it | Artifact / Gate |
 |---|---|---|

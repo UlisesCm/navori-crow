@@ -6,7 +6,7 @@ metadata:
   maxWords: 650
 ---
 
-<!-- navori:managed id="verify-before-done-base" hash="14c05b36" version="0.10.0" source="@navori/core" fmkeys="name,description,metadata" -->
+<!-- navori:managed id="verify-before-done-base" hash="0cafc426" version="0.11.0" source="@navori/core" fmkeys="name,description,metadata" -->
 # Verify Before Done
 
 ## The Iron Law
@@ -26,7 +26,7 @@ BEFORE claiming "done / ready / approved": IDENTIFY the command that proves it �
 | Claim | Required output | Not sufficient |
 |---|---|---|
 | `bun run lint && bun run typecheck` / `bun run check` green | Full command run this turn, exit 0 | "ran it before", "should be green" |
-| Zero new errors vs baseline | `git diff --name-only main` — a failure outside that list predates you | "lint said OK", no comparison |
+| Zero new errors vs baseline | Classify per **Failure attribution** below: state per failure, demonstrated over `main` | "outside the diff" / "inside the diff" alone |
 | UI validated in the browser (only if asked) | Observed state via the repo's browser tool this turn | "looks fine in code" |
 | Bug fixed | Reproduce the original symptom and see it NOT happen | "code changed, assumed fixed" |
 | PR creatable | Pre-flight THIS TURN: not on the protected base branch, `gh auth status`, receipt `"status":"ok"` (prefer `navori receipt check …`; if the installed CLI lacks it, use the repository-built CLI); declared-inline change, your own run. No clean working tree required | "the branch has commits, we can create it" |
@@ -35,10 +35,13 @@ BEFORE claiming "done / ready / approved": IDENTIFY the command that proves it �
 | Gate outlives Bash timeout, main session | `run_in_background`, wait on completion or `Monitor`; `TaskStop` unneeded tasks first | Polling (`pgrep`, `ps \| grep`) — matches other sessions' waits too |
 | Gate outlives Bash timeout, subagent | Its `&&` steps one by one, foreground, under the timeout | Backgrounding — a subagent never gets re-woken, the run orphans |
 
-## Baseline attribution (triage, not proof of age)
+## Failure attribution
 
-- Diff file → **introduced**. Outside the diff, no comparable baseline → **origin not determined**; only evidence over the same command/range calls it pre-existing. No location → not measured.
-- Never `git stash` to measure it — empties the shared tree while another agent reads it. Never exempts a red gate or skips review.
+A failure has three possible states: **introduced (demonstrated)**, **pre-existing (demonstrated)**, or **origin not determined**. Location relative to `git diff --name-only main` (inside or outside the diff) only orients — it never proves origin.
+
+Only the **same command**, run over the comparable base and over the change, demonstrates a state: the two runs disagree → introduced (demonstrated); they agree → pre-existing (demonstrated); no comparable run exists → origin not determined.
+
+Never `git stash` to measure it — it empties the shared tree while another agent reads it. No location → not measured; never exempts a red gate or skips review.
 
 ## Red flags (STOP)
 

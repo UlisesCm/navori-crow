@@ -10,10 +10,10 @@ metadata:
   maxWordsComposed: 1450
 ---
 
-<!-- navori:managed id="review-diff-base" hash="efdef356" version="0.10.0" source="@navori/core" fmkeys="name,description,metadata" -->
+<!-- navori:managed id="review-diff-base" hash="a492f142" version="0.11.0" source="@navori/core" fmkeys="name,description,metadata" -->
 # Code review — checklist for a diff
 
-Apply this checklist to a diff (staged, branch vs `main`, or a specific PR). The skeleton is stack-agnostic; the rules specific to your repo live in the user-section at the end.
+Apply this checklist to a diff (staged, branch vs `main`, or a PR). The skeleton is stack-agnostic; repo-specific rules live in the user-section below.
 
 ## How to report
 
@@ -31,7 +31,7 @@ One line per finding, ordered CRITICAL → HIGH → MEDIUM:
 
 If it doesn't reach MEDIUM, don't report it. No "nitpick" or "consider also". (Maps to the `reviewer`: CRITICAL/HIGH = confidence ≥80, blocking; MEDIUM = informational observation 50-79.)
 
-**Three-part proof for HIGH or CRITICAL.** Every HIGH or CRITICAL finding names its `file:line`, the concrete failure scenario, and why no existing guard/check catches it. Missing any of the three downgrades it to MEDIUM, or drops it if it doesn't reach MEDIUM either. **Zero findings is a valid verdict** — it needs no excuse or padding to look thorough.
+**Three-part proof for HIGH or CRITICAL.** Every HIGH or CRITICAL finding names its `file:line`, the concrete failure scenario, and why no existing guard/check catches it. Missing any of the three downgrades it to MEDIUM, or drops it if it doesn't reach MEDIUM either. **Zero findings is a valid verdict** — it needs no excuse to look thorough.
 
 ## 0. Pre-pass (before reading line by line)
 
@@ -88,7 +88,7 @@ Mirror of the `implementer`'s YAGNI ladder: hunt for the code of **excess**.
 - A deliberate shortcut without its mark (ceiling + upgrade trigger) → MEDIUM: silent debt is worse than declared debt.
 - A function whose cognitive complexity exceeds the repo's threshold (piled-up nesting, branches, flags) → HIGH. Extract before it lands, not after the scanner complains.
 
-Rule: if removing the abstraction leaves the code **just as correct** and shorter, removing it is the finding.
+Rule: if removing the abstraction leaves the code **as correct** and shorter, removing it is the finding.
 
 **Don't confuse it with incompleteness.** Removing the handling of a real edge case, a validation or an error path is NOT simplifying — it's a bug, and it goes to §1-§4 (not here). This dimension attacks *excess structure*, never *missing coverage*. What the YAGNI ladder protects (trust boundaries, errors that prevent data loss, security, accessibility) is never over-engineering.
 
@@ -103,7 +103,7 @@ Rule: if removing the abstraction leaves the code **just as correct** and shorte
 ## 9. Quality gate (run this turn, not assumed)
 
 - `bun run check` passes → CRITICAL if it fails; this is the same gate the `reviewer` owns in Pass 2, never re-defined here.
-- Zero new errors/warnings vs baseline → HIGH if the diff adds them.
+- Failure attribution (per `verify-before-done`): a failure classified *introduced (demonstrated)* → HIGH; never classify one by diff location alone.
 
 ## 10. Commit and PR
 
