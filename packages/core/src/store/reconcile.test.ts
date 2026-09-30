@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import type { PendingEvent } from "./store";
 import { getSessionDetail, listEventsAfter, listSessionEvents, stats } from "./store";
@@ -49,7 +50,12 @@ function toolLanes(): Record<string, PendingEvent> {
       {
         kind: "tool.pre",
         ts: T0 + 1005,
-        tool: { name: "Bash", callId: "c1", verdict: "allow", decisionSource: "user" },
+        tool: {
+          name: "Bash",
+          callId: "c1",
+          verdict: "allow",
+          decisionSource: "user",
+        },
         match: PRE,
       },
       30,
@@ -59,7 +65,13 @@ function toolLanes(): Record<string, PendingEvent> {
       {
         kind: "tool.post",
         ts: T0 + 1300,
-        tool: { name: "Bash", callId: "c1", ok: true, ms: 300, msSource: "transcript" },
+        tool: {
+          name: "Bash",
+          callId: "c1",
+          ok: true,
+          ms: 300,
+          msSource: "transcript",
+        },
         match: POST,
       },
       40,
@@ -314,9 +326,22 @@ describe("reconcile: one logical fact across lanes (R13)", () => {
     for (const order of permutations(["transcript", "hook", "otel"] as const)) {
       const db = freshDb();
       const deps = makeDeps();
-      const texts = { transcript: "fix the bug please", hook: "fix the bug", otel: "fix" };
+      const texts = {
+        transcript: "fix the bug please",
+        hook: "fix the bug",
+        otel: "fix",
+      };
       for (const lane of order) {
-        ingest(db, deps, pending(lane, { kind: "prompt", ts: T0 + 10, text: texts[lane], match }));
+        ingest(
+          db,
+          deps,
+          pending(lane, {
+            kind: "prompt",
+            ts: T0 + 10,
+            text: texts[lane],
+            match,
+          }),
+        );
       }
       const facts = factRows(db);
       expect(facts).toHaveLength(1);
@@ -329,7 +354,12 @@ describe("reconcile: one logical fact across lanes (R13)", () => {
   test("a Codex prompt (nearest, fingerprint) fuses across lanes; distinct prompts and repeats stay apart", () => {
     // Covers: R13
     const spec = (fingerprint: string) =>
-      ({ key: "prompt@main", mode: "nearest", windowMs: 10_000, fingerprint }) as const;
+      ({
+        key: "prompt@main",
+        mode: "nearest",
+        windowMs: 10_000,
+        fingerprint,
+      }) as const;
     for (const order of permutations(["transcript", "hook"] as const)) {
       const db = freshDb();
       const deps = makeDeps();
@@ -353,12 +383,22 @@ describe("reconcile: one logical fact across lanes (R13)", () => {
     ingest(
       far,
       makeDeps(),
-      pending("transcript", { kind: "prompt", ts: T0, text: "a", match: spec("fp-a") }),
+      pending("transcript", {
+        kind: "prompt",
+        ts: T0,
+        text: "a",
+        match: spec("fp-a"),
+      }),
     );
     ingest(
       far,
       makeDeps(),
-      pending("hook", { kind: "prompt", ts: T0 + 60_000, text: "a", match: spec("fp-a") }),
+      pending("hook", {
+        kind: "prompt",
+        ts: T0 + 60_000,
+        text: "a",
+        match: spec("fp-a"),
+      }),
     );
     expect(factRows(far)).toHaveLength(2);
 
@@ -367,12 +407,22 @@ describe("reconcile: one logical fact across lanes (R13)", () => {
     ingest(
       twice,
       makeDeps(),
-      pending("transcript", { kind: "prompt", ts: T0, text: "a", match: spec("fp-a") }),
+      pending("transcript", {
+        kind: "prompt",
+        ts: T0,
+        text: "a",
+        match: spec("fp-a"),
+      }),
     );
     ingest(
       twice,
       makeDeps(),
-      pending("transcript", { kind: "prompt", ts: T0 + 1000, text: "a", match: spec("fp-a") }),
+      pending("transcript", {
+        kind: "prompt",
+        ts: T0 + 1000,
+        text: "a",
+        match: spec("fp-a"),
+      }),
     );
     expect(factRows(twice)).toHaveLength(2);
 
@@ -381,22 +431,80 @@ describe("reconcile: one logical fact across lanes (R13)", () => {
     ingest(
       two,
       makeDeps(),
-      pending("transcript", { kind: "prompt", ts: T0, text: "a", match: spec("fp-a") }),
+      pending("transcript", {
+        kind: "prompt",
+        ts: T0,
+        text: "a",
+        match: spec("fp-a"),
+      }),
     );
     ingest(
       two,
       makeDeps(),
-      pending("transcript", { kind: "prompt", ts: T0 + 500, text: "b", match: spec("fp-b") }),
+      pending("transcript", {
+        kind: "prompt",
+        ts: T0 + 500,
+        text: "b",
+        match: spec("fp-b"),
+      }),
     );
     ingest(
       two,
       makeDeps(),
-      pending("hook", { kind: "prompt", ts: T0 + 600, text: "b", match: spec("fp-b") }),
+      pending("hook", {
+        kind: "prompt",
+        ts: T0 + 600,
+        text: "b",
+        match: spec("fp-b"),
+      }),
     );
     const facts = factRows(two);
     expect(facts).toHaveLength(2);
     expect(facts.find((f) => f.text === "a")!.sources).toEqual(["transcript"]);
     expect(facts.find((f) => f.text === "b")!.sources).toEqual(["transcript", "hook"]);
+  });
+
+  test("a Codex prompt as the rollout and the hook emit it (trimmed-text sha1, seconds apart) is one fact per turn", () => {
+    // Covers: R13
+    // Same key shape as codex `map-line.ts` and `hook.ts`: fingerprint = sha1(text.trim()).
+    const spec = (text: string) =>
+      ({
+        key: "prompt@main",
+        mode: "nearest",
+        windowMs: 10_000,
+        fingerprint: createHash("sha1").update(text.trim()).digest("hex"),
+      }) as const;
+    const turn = (text: string, at: number) => ({
+      transcript: pending("transcript", { kind: "prompt", ts: at, text, match: spec(text) }, 10),
+      hook: pending(
+        "hook",
+        {
+          kind: "prompt",
+          ts: at + 3000,
+          text: `${text}\n`,
+          match: spec(`${text}\n`),
+        },
+        20,
+      ),
+    });
+    const first = turn("run the tests", T0);
+    const second = turn("now fix them", T0 + 60_000);
+    const parts = {
+      t1: first.transcript,
+      h1: first.hook,
+      t2: second.transcript,
+      h2: second.hook,
+    };
+    const orders = permutations(Object.keys(parts));
+    expect(orders).toHaveLength(24);
+    for (const order of orders) {
+      const db = freshDb();
+      const deps = makeDeps();
+      for (const name of order) ingest(db, deps, parts[name as keyof typeof parts]);
+      const facts = factRows(db);
+      expect(facts).toHaveLength(2);
+      expect(facts.map((f) => f.sources).every((s) => s?.length === 2)).toBe(true);
+    }
   });
 
   test("session start (transcript + hook) is one fact in both orders", () => {
@@ -409,7 +517,11 @@ describe("reconcile: one logical fact across lanes (R13)", () => {
         ingest(
           db,
           deps,
-          pending(lane, { kind: "session.start", ts: T0 + (lane === "hook" ? 5 : 0), match }),
+          pending(lane, {
+            kind: "session.start",
+            ts: T0 + (lane === "hook" ? 5 : 0),
+            match,
+          }),
         );
       }
       expect(factRows(db)).toHaveLength(1);
@@ -466,7 +578,11 @@ describe("reconcile: one logical fact across lanes (R13)", () => {
 
   test("a compaction (hook:pre, hook:post, transcript) is one fact in all 6 orders; trigger from pre, endedAt from post", () => {
     // Covers: R13
-    const match = { key: "compact@main", mode: "nearest", windowMs: 600_000 } as const;
+    const match = {
+      key: "compact@main",
+      mode: "nearest",
+      windowMs: 600_000,
+    } as const;
     const parts = {
       pre: pending("hook", {
         kind: "compact",
@@ -520,7 +636,12 @@ describe("reconcile: non-monotone effects (BD1)", () => {
     const out = ingest(
       db,
       deps,
-      pending("transcript", { kind: "prompt", ts: T0 + 95, text: "P1 (full text)", match: p1 }),
+      pending("transcript", {
+        kind: "prompt",
+        ts: T0 + 95,
+        text: "P1 (full text)",
+        match: p1,
+      }),
     );
     expect(out.map((e) => e.kind)).toEqual(["revision"]); // the fact itself was fused
     const session = getSessionDetail(db, "claude:s1")!.session;
@@ -602,7 +723,12 @@ describe("reconcile: non-monotone effects (BD1)", () => {
 
 describe("nearest matching: the fingerprint is required when both sides carry one (R13)", () => {
   const spec = (fingerprint?: string) =>
-    ({ key: "prompt@main", mode: "nearest", windowMs: 10_000, fingerprint }) as const;
+    ({
+      key: "prompt@main",
+      mode: "nearest",
+      windowMs: 10_000,
+      fingerprint,
+    }) as const;
   const prompt = (
     source: "transcript" | "hook",
     ts: number,
