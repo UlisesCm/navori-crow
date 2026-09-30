@@ -5,6 +5,7 @@
  */
 import type { CrowConfig, EngineAdapter, FileMatch } from "@crow/core";
 import { join, relative, sep } from "node:path";
+import { codexFromHook } from "./hook";
 import { initialCodexState, mapCodexLine, restoreCodexState } from "./map-line";
 import type { CodexState } from "./map-line";
 
@@ -51,4 +52,6 @@ export const codexAdapter: EngineAdapter<CodexState> = {
   },
 
   parseLine: mapCodexLine,
+
+  fromHook: codexFromHook,
 };
