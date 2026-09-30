@@ -727,3 +727,221 @@ describe("Codex OTLP parent link (R13, D4, D6)", () => {
     }
   });
 });
+
+describe("Codex OTel spawn links the thread (R16, R35, D19 B1)", () => {
+  const spawn = (sender: string, receiver: string): PendingEvent =>
+    makePending(
+      { engine: "codex", source: "otel" },
+      {
+        sessionId: sender,
+        agentId: receiver,
+        kind: "agent.start",
+        text: undefined,
+        match: { key: `agent-start:${receiver}`, mode: "exact" },
+      },
+    );
+  const tool = (thread: string): PendingEvent =>
+    makePending(
+      { engine: "codex", source: "otel" },
+      {
+        sessionId: thread,
+        kind: "tool.post",
+        text: undefined,
+        tool: { name: "exec", callId: "c1", ok: true },
+        match: { key: "tool-post:c1", mode: "exact" },
+      },
+    );
+  const sessions = (db: Database): string[] =>
+    db
+      .query<{ id: string }, []>("SELECT id FROM sessions ORDER BY id")
+      .all()
+      .map((r) => r.id);
+  const agentRow = (db: Database, id: string) =>
+    db
+      .query<{ parent_id: string | null; agent_id: string | null }, [string]>(
+        "SELECT parent_id, agent_id FROM agents WHERE id = ?",
+      )
+      .get(id);
+
+  test("the root's spawn, then the child's OTel: codex:root and agent kid, no codex:kid", () => {
+    // Covers: R16, R35
+    const db = freshDb();
+    ingestEvents(db, makeDeps(), [spawn("root", "kid"), tool("kid")]);
+    expect(sessions(db)).toEqual(["codex:root"]);
+    expect(agentRow(db, "codex:root/kid")).toEqual({ parent_id: null, agent_id: "kid" });
+    const row = db
+      .query<{ session_id: string; agent_id: string | null }, []>(
+        "SELECT session_id, agent_id FROM events WHERE kind = 'tool.post'",
+      )
+      .get();
+    expect(row).toEqual({ session_id: "codex:root", agent_id: "kid" });
+  });
+
+  test("a spawn whose sender is a linked thread keeps the receiver and takes the sender as parent", () => {
+    // Covers: R16, R35
+    const db = freshDb();
+    ingestEvents(db, makeDeps(), [spawn("root", "K"), spawn("K", "Y")]);
+    expect(sessions(db)).toEqual(["codex:root"]);
+    expect(agentRow(db, "codex:root/Y")).toEqual({ parent_id: "codex:root/K", agent_id: "Y" });
+    expect(agentRow(db, "codex:root/K")).toEqual({ parent_id: null, agent_id: "K" });
+  });
+
+  test("no lane linked the sender: its spawn stays under codex:<sender> (residual)", () => {
+    // Covers: R16, R35
+    const db = freshDb();
+    ingestEvents(db, makeDeps(), [spawn("K", "Y")]);
+    expect(sessions(db)).toEqual(["codex:K"]);
+    expect(agentRow(db, "codex:K/Y")).toEqual({ parent_id: null, agent_id: "Y" });
+  });
+});
+
+describe("Codex late link re-homes the OTel ledger (R12, R37, D19 B2)", () => {
+  const USAGE = { input: 10, output: 5, cacheRead: 0, cacheCreation: 0, model: "gpt-5" };
+  const spawn = (sender: string, receiver: string): PendingEvent =>
+    makePending(
+      { engine: "codex", source: "otel" },
+      {
+        sessionId: sender,
+        agentId: receiver,
+        kind: "agent.start",
+        text: undefined,
+        match: { key: `agent-start:${receiver}`, mode: "exact" },
+      },
+    );
+  /** An OTLP usage record of `thread`; the same `hash` is the same record, i.e. a retry. */
+  const usage = (thread: string, hash: string): PendingEvent =>
+    makePending(
+      { engine: "codex", source: "otel", lineHash: hash },
+      {
+        sessionId: thread,
+        kind: "usage",
+        text: undefined,
+        otelUsage: USAGE,
+        reported: { metric: "sse_event", input: 10, output: 5 },
+      },
+    );
+  const num = (db: Database, sql: string): number =>
+    db.query<{ t: number | null }, []>(sql).get()?.t ?? 0;
+  const day = (db: Database): number => num(db, "SELECT SUM(t_input) AS t FROM project_daily");
+  const agentInput = (db: Database, id: string): number =>
+    num(db, `SELECT t_input AS t FROM agents WHERE id = '${id}'`);
+
+  test("a retry that crosses the late link counts once, counted or still held", () => {
+    // Covers: R12, R37
+    for (const tickBeforeLink of [true, false]) {
+      const db = freshDb();
+      let now = NOW;
+      const deps = makeDeps({ now: () => now });
+      ingestEvents(db, deps, [usage("kid", "rec-1")]);
+      if (tickBeforeLink) {
+        now += OTEL_HOLD_MS + 1;
+        promoteHeldUsage(db, deps);
+      }
+      ingestEvents(db, deps, [spawn("root", "kid")]);
+      ingestEvents(db, deps, [usage("kid", "rec-1")]); // the exporter retries the same batch
+      now += 10 * OTEL_HOLD_MS;
+      promoteHeldUsage(db, deps);
+      expect({
+        tickBeforeLink,
+        day: day(db),
+        kid: agentInput(db, "codex:root/kid"),
+        orphan: num(db, "SELECT t_input AS t FROM sessions WHERE id = 'codex:kid'"),
+      }).toEqual({ tickBeforeLink, day: 10, kid: 10, orphan: 0 });
+    }
+  });
+
+  test("the re-home is idempotent: a second link lane, re-ingestion and ticks change nothing", () => {
+    // Covers: R12, R37
+    const db = freshDb();
+    let now = NOW;
+    const deps = makeDeps({ now: () => now });
+    ingestEvents(db, deps, [usage("kid", "rec-1")]);
+    now += OTEL_HOLD_MS + 1;
+    promoteHeldUsage(db, deps);
+    ingestEvents(db, deps, [spawn("root", "kid")]);
+    const snapshot = (): unknown => ({
+      ledger: db
+        .query<{ session_id: string; key: string; state: string }, []>(
+          "SELECT session_id, key, state FROM otel_usage ORDER BY session_id, key",
+        )
+        .all(),
+      totals: db
+        .query<{ id: string; t_input: number }, []>("SELECT id, t_input FROM sessions ORDER BY id")
+        .all(),
+      late: stats(db).otelLateLinks,
+    });
+    const once = snapshot();
+    ingestEvents(db, deps, [
+      makePending(
+        { engine: "codex", source: "hook" },
+        {
+          sessionId: "root",
+          agentId: "kid",
+          kind: "agent.start",
+          text: undefined,
+          match: { key: "agent-start:kid", mode: "exact" },
+        },
+      ),
+    ]);
+    now += 10 * OTEL_HOLD_MS;
+    promoteHeldUsage(db, deps);
+    expect(snapshot()).toEqual(once);
+    expect(stats(db).otelLateLinks).toBe(1);
+    expect(day(db)).toBe(10);
+  });
+
+  test("the thread's session gets the exact negative correction and the root the positive one, both published", () => {
+    // Covers: R37
+    const db = freshDb();
+    let now = NOW;
+    const deps = makeDeps({ now: () => now });
+    ingestEvents(db, deps, [usage("kid", "rec-1")]);
+    now += OTEL_HOLD_MS + 1;
+    promoteHeldUsage(db, deps);
+    const stored = ingestEvents(db, deps, [spawn("root", "kid")]);
+    const corrections = stored
+      .filter((e) => e.kind === "usage")
+      .map((e) => ({ sessionId: e.sessionId, agentId: e.agentId, input: e.usage?.input }));
+    expect(corrections).toEqual([
+      { sessionId: "kid", agentId: null, input: -10 },
+      { sessionId: "root", agentId: "kid", input: 10 },
+    ]);
+  });
+
+  test("a nested orphan: the money is counted once all the way up, and the lookup is deterministic", () => {
+    // Covers: R12, R37
+    const db = freshDb();
+    let now = NOW;
+    const deps = makeDeps({ now: () => now });
+    // K was never linked: its spawn of Y and Y's usage stay under codex:K.
+    ingestEvents(db, deps, [spawn("K", "Y"), usage("Y", "rec-y")]);
+    expect(agentInput(db, "codex:K/Y")).toBe(0);
+    now += OTEL_HOLD_MS + 1;
+    promoteHeldUsage(db, deps);
+    expect(agentInput(db, "codex:K/Y")).toBe(10);
+    // Now K links to the root: Y's ledger follows K into the root.
+    ingestEvents(db, deps, [spawn("root", "K")]);
+    expect({
+      day: day(db),
+      y: agentInput(db, "codex:root/Y"),
+      orphanY: agentInput(db, "codex:K/Y"),
+      late: stats(db).otelLateLinks,
+    }).toEqual({ day: 10, y: 10, orphanY: 0, late: 1 });
+    const parent = db
+      .query<{ parent_id: string | null }, []>(
+        "SELECT parent_id FROM agents WHERE id = 'codex:root/Y'",
+      )
+      .get();
+    expect(parent?.parent_id).toBe("codex:root/K");
+
+    // Y now has rows in two sessions; the next record of Y goes to the session that is not a thread.
+    ingestEvents(db, deps, [usage("Y", "rec-y2")]);
+    now += 10 * OTEL_HOLD_MS;
+    promoteHeldUsage(db, deps);
+    expect({
+      day: day(db),
+      y: agentInput(db, "codex:root/Y"),
+      orphanY: agentInput(db, "codex:K/Y"),
+    }).toEqual({ day: 20, y: 20, orphanY: 0 });
+  });
+});

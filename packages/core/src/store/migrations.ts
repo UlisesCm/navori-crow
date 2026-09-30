@@ -162,11 +162,26 @@ const SCHEMA_V3_COLUMNS: NonNullable<Migration["addColumns"]> = [
   { table: "sessions", column: "tu_unkeyed", ddl: "INTEGER NOT NULL DEFAULT 0" },
 ];
 
+/** v4 (F2a B8, D19): the ledger is per agent. Re-applicable: columns are added only when absent. */
+const SCHEMA_V4 = `
+CREATE INDEX IF NOT EXISTS agents_by_agent_id ON agents(agent_id) WHERE agent_id IS NOT NULL;
+UPDATE agents SET tu_unkeyed = 1
+  WHERE agent_id IS NOT NULL AND t_input + t_output + t_cache_read + t_cache_creation > 0
+    AND NOT EXISTS (SELECT 1 FROM otel_usage u WHERE u.session_id = agents.session_id
+                    AND u.agent_id = agents.agent_id AND u.state = 'counted');
+`;
+
+const SCHEMA_V4_COLUMNS: NonNullable<Migration["addColumns"]> = [
+  { table: "otel_usage", column: "agent_id", ddl: "TEXT" },
+  { table: "agents", column: "tu_unkeyed", ddl: "INTEGER NOT NULL DEFAULT 0" },
+];
+
 /** Ordered set of migrations this build knows how to apply. */
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
   { version: 3, sql: SCHEMA_V3, addColumns: SCHEMA_V3_COLUMNS },
+  { version: 4, sql: SCHEMA_V4, addColumns: SCHEMA_V4_COLUMNS },
 ];
 
 /** Reads `PRAGMA user_version` (outside any transaction, per D2). */

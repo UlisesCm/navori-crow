@@ -485,3 +485,139 @@ describe("no double count or loss in any permutation", () => {
     }
   });
 });
+
+describe("the ledger is per agent for Codex subagent threads (D19, R36)", () => {
+  const CODEX_USAGE: CrowEventUsage = { input: 10, output: 5, cacheRead: 0, cacheCreation: 0 };
+  const MAIN_USAGE: CrowEventUsage = { input: 7, output: 3, cacheRead: 0, cacheCreation: 0 };
+  const codex = (p: PendingEvent): PendingEvent => ({ ...p, engine: "codex" });
+  const startKid = { key: "agent-start:kid", mode: "exact" } as const;
+
+  /** The OTel spawn that links `kid` to `root`: the thread's own records follow the link. */
+  const spawn = (): PendingEvent =>
+    codex(
+      pending("otel", {
+        sessionId: "root",
+        agentId: "kid",
+        kind: "agent.start",
+        ts: T0 + 1,
+        match: startKid,
+      }),
+    );
+  /** Keyless OTel usage of a thread (`sessionId` is the thread id until it is linked). */
+  const otelUsage = (thread: string, usage: CrowEventUsage, ts = T0 + 600): PendingEvent =>
+    codex(
+      pending("otel", {
+        sessionId: thread,
+        kind: "usage",
+        ts,
+        otelUsage: usage,
+        reported: { metric: "sse_event", input: usage.input, output: usage.output },
+      }),
+    );
+  /** A keyless rollout usage line (Codex `token_count`) of `agentId` (`null` = main) under `root`. */
+  const rollout = (agentId: string | null, usage: CrowEventUsage): PendingEvent =>
+    codex(
+      pending("transcript", {
+        sessionId: "root",
+        agentId,
+        kind: "assistant.message",
+        ts: T0 + 650,
+        text: "answer",
+        usage,
+        usageKey: `u:${agentId ?? "main"}:1`,
+      }),
+    );
+
+  const input = (db: Database, sql: string): number =>
+    db.query<{ t: number | null }, []>(sql).get()?.t ?? 0;
+  const view = (db: Database): { total: number; main: number; kid: number; orphan: number } => ({
+    total: input(db, "SELECT SUM(t_input) AS t FROM project_daily"),
+    main: input(db, "SELECT t_input AS t FROM agents WHERE id = 'codex:root/main'"),
+    kid: input(db, "SELECT t_input AS t FROM agents WHERE id = 'codex:root/kid'"),
+    orphan: input(db, "SELECT t_input AS t FROM sessions WHERE id = 'codex:kid'"),
+  });
+
+  /** Runs `steps`, then lets every held row reach its verdict. */
+  function run(steps: readonly PendingEvent[]): Database {
+    const db = freshDb();
+    const clock: Clock = { t: T0 };
+    const deps = clockDeps(clock);
+    for (const step of steps) ingest(db, deps, step);
+    clock.t += 10 * OTEL_HOLD_MS;
+    promoteHeldUsage(db, deps);
+    return db;
+  }
+
+  test("(a) the root has a rollout and the child has none: main 7 and kid 10, total 17, in all 6 orders", () => {
+    // Covers: R12, R36
+    const make = (): Record<string, PendingEvent> => ({
+      rootRollout: rollout(null, MAIN_USAGE),
+      spawn: spawn(),
+      kidOtel: otelUsage("kid", CODEX_USAGE),
+    });
+    const orders = permutations(Object.keys(make()));
+    expect(orders).toHaveLength(6);
+    for (const order of orders) {
+      const lanes = make();
+      const label = order.join(",");
+      expect({ label, ...view(run(order.map((n) => lanes[n]!))) }).toEqual({
+        label,
+        total: 17,
+        main: 7,
+        kid: 10,
+        orphan: 0,
+      });
+    }
+  });
+
+  test("(b) a keyless root line leaves the child's OTel rows alone", () => {
+    // Covers: R12, R36
+    const db = run([spawn(), otelUsage("kid", CODEX_USAGE), rollout(null, MAIN_USAGE)]);
+    expect(view(db)).toEqual({ total: 17, main: 7, kid: 10, orphan: 0 });
+    const states = db
+      .query<{ state: string; agent_id: string | null }, []>(
+        "SELECT state, agent_id FROM otel_usage",
+      )
+      .all();
+    expect(states).toEqual([{ state: "counted", agent_id: "kid" }]);
+  });
+
+  test("(b) a keyless child line replaces the child's OTel and, conservatively, the main agent's (c3, never double counts)", () => {
+    // Covers: R12, R36
+    const main = otelUsage("root", MAIN_USAGE, T0 + 5);
+    for (const order of permutations(["mainOtel", "spawn", "kidRollout"])) {
+      const lanes: Record<string, PendingEvent> = {
+        mainOtel: main,
+        spawn: spawn(),
+        kidRollout: rollout("kid", CODEX_USAGE),
+      };
+      const db = run(order.map((n) => lanes[n]!));
+      const label = order.join(",");
+      // Main's 7 is lost: the documented undercount of R36, limited to the main agent's OTLP usage.
+      expect({ label, ...view(db) }).toEqual({ label, total: 10, main: 0, kid: 10, orphan: 0 });
+    }
+  });
+
+  test("a keyless child line never covers another child's OTel usage", () => {
+    // Covers: R12, R36
+    const otherSpawn = codex(
+      pending("otel", {
+        sessionId: "root",
+        agentId: "other",
+        kind: "agent.start",
+        ts: T0 + 2,
+        match: { key: "agent-start:other", mode: "exact" },
+      }),
+    );
+    const db = run([
+      spawn(),
+      otherSpawn,
+      otelUsage("other", MAIN_USAGE),
+      rollout("kid", CODEX_USAGE),
+    ]);
+    expect({
+      kid: input(db, "SELECT t_input AS t FROM agents WHERE id = 'codex:root/kid'"),
+      other: input(db, "SELECT t_input AS t FROM agents WHERE id = 'codex:root/other'"),
+    }).toEqual({ kid: 10, other: 7 });
+  });
+});
