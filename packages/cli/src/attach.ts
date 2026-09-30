@@ -11,6 +11,7 @@ import {
   buildContext,
   confirmChange,
   hookScriptState,
+  maskOptions,
   parseChangeArgs,
   readManifest,
   readSnapshot,
@@ -59,13 +60,7 @@ async function attach(argv: readonly string[], io: AttachIo): Promise<number> {
     if (notice) io.out(`note: ${notice}`);
     const env =
       args.engine === "claude" ? parseClaudeSettings(snapshot.text, ctx.configPath)["env"] : null;
-    io.out(
-      maskedDiff(before, plan.after, {
-        label: ctx.configPath,
-        maskKeys: typeof env === "object" && env !== null ? Object.keys(env) : [],
-        ...(io.env["CROW_TOKEN"] ? { secrets: [io.env["CROW_TOKEN"]] } : {}),
-      }),
-    );
+    io.out(maskedDiff(before, plan.after, maskOptions(ctx.configPath, env, io)));
   } else {
     io.out(`${ctx.configPath} already has crow's hooks`);
   }

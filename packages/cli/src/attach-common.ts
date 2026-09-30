@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { loadConfig } from "@crow/core";
 import type { ConfigEnv } from "@crow/core";
+import type { DiffOptions } from "./diff";
 import { atomicWrite, resolveTarget, safeWrite } from "./fs-safe";
 import { generateHookScript } from "./hook-script";
 
@@ -280,4 +281,21 @@ export function reportBackup(io: AttachIo, backup: string | null): void {
   if (backup !== null) {
     io.out(`backup: ${backup} (0600; it copies the secrets the file holds)`);
   }
+}
+
+/**
+ * Masking options of the diff shown by attach and detach (D17): every key of the settings
+ * `env` object (`envBlock`, Claude only) plus the ingest token from the environment.
+ */
+export function maskOptions(
+  label: string,
+  envBlock: unknown,
+  io: AttachIo,
+): DiffOptions & { label: string } {
+  const token = io.env["CROW_TOKEN"];
+  return {
+    label,
+    maskKeys: isRecord(envBlock) ? Object.keys(envBlock) : [],
+    ...(token ? { secrets: [token] } : {}),
+  };
 }

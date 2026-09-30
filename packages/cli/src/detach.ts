@@ -9,6 +9,7 @@ import {
   buildContext,
   confirmChange,
   manifestPath,
+  maskOptions,
   parseChangeArgs,
   readManifest,
   readSnapshot,
@@ -17,7 +18,7 @@ import {
   writeManifest,
 } from "./attach-common";
 import type { AttachIo } from "./attach-common";
-import { planClaudeDetach } from "./claude-config";
+import { parseClaudeSettings, planClaudeDetach } from "./claude-config";
 import { planCodexDetach } from "./codex-config";
 import { rmSync } from "node:fs";
 
@@ -52,7 +53,9 @@ async function detach(argv: readonly string[], io: AttachIo): Promise<number> {
     io.out(`no unmodified crow entries in ${ctx.configPath}; nothing to remove`);
     return 0;
   }
-  io.out(maskedDiff(snapshot.text, plan.after, { label: ctx.configPath }));
+  const env =
+    args.engine === "claude" ? parseClaudeSettings(snapshot.text, ctx.configPath)["env"] : null;
+  io.out(maskedDiff(snapshot.text, plan.after, maskOptions(ctx.configPath, env, io)));
   await confirmChange(io, args.yes);
 
   const { backup } = writeConfig(ctx, snapshot, plan.after, io);
