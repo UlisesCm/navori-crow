@@ -22,7 +22,7 @@ Lotes de 1–3 tareas; cada tarea declara los `R<n>` que cubre y sus tests (todo
 
 ## B3 · hooks de Codex (depende de B2)
 
-- [x] **B3.T1** (R9, R10, R13) — `fromHook` de Codex sobre las capturas de B0 y, solo si G2 lo pide, resolución de hilos por `transcript_path`; prompt de Codex a un solo hecho entre carriles. · tests: `packages/adapters/codex/src/hook.test.ts`, `store/reconcile.test.ts` (prompt de Codex). **Hecho (2026-09-30).** Sin resolución por `transcript_path` (G2: `session_id` siempre raíz). Deuda: `exec-<id>` de Bash no se funde con `call_id` del rollout hasta que `map-line` use `item.id`.
+- [x] **B3.T1** (R9, R10, R13) — `fromHook` de Codex sobre las capturas de B0 y, solo si G2 lo pide, resolución de hilos por `transcript_path`; prompt de Codex a un solo hecho entre carriles. · tests: `packages/adapters/codex/src/hook.test.ts`, `store/reconcile.test.ts` (prompt de Codex). **Hecho (2026-09-30).** Sin resolución por `transcript_path` (G2: `session_id` siempre raíz). Diagnóstico (Codex ≥0.155): el `exec` del rollout es un contenedor (transcript+otel, clave `call_id`) y su `exec_command` anidado es otra llamada (hook+otel, `item.id` = `tool_use_id`), con duraciones anidadas; no es un duplicado y está fijado por `e2e/lanes.test.ts` (R11). Pendiente para F2b: anidar el comando bajo su exec en la UI.
 
 ## B4 · receptor OTLP (depende de B1)
 
