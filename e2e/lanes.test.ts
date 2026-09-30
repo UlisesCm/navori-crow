@@ -343,3 +343,67 @@ describe("three lanes over the B0 Codex session, random delivery order", () => {
     for (const r of otelRows) expect(r.body_json).not.toContain("«");
   });
 });
+
+describe("Codex exec container versus its nested exec_command", () => {
+  test("a Bash command is two facts: transcript+otel container, hook+otel item; never fused (R11)", () => {
+    // Covers: R11
+    // In Codex >= 0.155 a rollout `exec` (keyed by `call_id`) contains an `exec_command` item whose
+    // `item.id` is the hook's `tool_use_id`: two real calls with nested durations, not a duplicate.
+    const itemIds = new Set(
+      hookDeliveries()
+        .flat()
+        .filter((p) => p.event.tool?.name === "Bash" && p.event.tool.callId !== undefined)
+        .map((p) => p.event.tool!.callId as string),
+    );
+    expect(itemIds.size).toBeGreaterThan(0);
+    const srcs = (e: CrowEvent): string => [...(e.sources ?? [e.source])].sort().join("+");
+    for (const seed of SEEDS) {
+      const rnd = prng(seed);
+      const order = shuffle(PLAN, rnd);
+      const post = facts(run(order, Math.floor(rnd() * order.length))).filter(
+        (e) => e.kind === "tool.post" && e.tool?.callId !== undefined,
+      );
+      const items = post.filter((e) => itemIds.has(e.tool!.callId!));
+      const containers = post.filter((e) => e.tool!.name === "exec");
+      expect({ seed, items: items.length }).toEqual({
+        seed,
+        items: itemIds.size,
+      });
+      expect({ seed, containers: containers.length }).toEqual({
+        seed,
+        containers: itemIds.size,
+      });
+      for (const i of items) {
+        expect({ seed, id: i.tool!.callId, sources: srcs(i) }).toEqual({
+          seed,
+          id: i.tool!.callId,
+          sources: "hook+otel",
+        });
+      }
+      for (const c of containers) {
+        expect({ seed, id: c.tool!.callId, sources: srcs(c) }).toEqual({
+          seed,
+          id: c.tool!.callId,
+          sources: "otel+transcript",
+        });
+      }
+      const itemIdSet = new Set(items.map((e) => e.tool!.callId));
+      expect({
+        seed,
+        shared: containers.filter((c) => itemIdSet.has(c.tool!.callId)).length,
+      }).toEqual({
+        seed,
+        shared: 0,
+      });
+      const ms = (list: CrowEvent[]): number[] =>
+        list.map((e) => e.tool!.ms ?? -1).sort((a, b) => a - b);
+      const cm = ms(containers);
+      const im = ms(items);
+      expect({ seed, missing: im.includes(-1) }).toEqual({
+        seed,
+        missing: false,
+      });
+      im.forEach((v, k) => expect({ seed, k, ok: cm[k]! >= v }).toEqual({ seed, k, ok: true }));
+    }
+  });
+});
