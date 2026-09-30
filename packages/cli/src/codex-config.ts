@@ -6,17 +6,33 @@
 import {
   AttachError,
   CODEX_EVENTS,
+  DEFAULT_OTLP_PORT,
   HOOK_TIMEOUT_S,
   crowCommandRe,
   isRecord,
   sameData,
 } from "./attach-common";
-import type { AttachContext, Manifest, ManifestUnit } from "./attach-common";
+import type { AttachContext, Manifest, ManifestUnit, OtlpLane } from "./attach-common";
 
 type Obj = Record<string, unknown>;
 
 export const BLOCK_START = "# >>> crow v1 — crow attach codex; remove with: crow detach codex >>>";
 export const BLOCK_END = "# <<< crow <<<";
+
+/**
+ * Text of the `[otel]` table crow writes (D14, R34): logs to crow's OTLP receiver over
+ * HTTP/JSON. `log_user_prompt` is never written (R24).
+ */
+export function codexOtelText(ctx: AttachContext): string {
+  return [
+    "[otel]",
+    `exporter = { otlp-http = { endpoint = "http://127.0.0.1:${ctx.otlpPort}/v1/logs", protocol = "json" } }`,
+  ].join("\n");
+}
+
+/** Shape of the `[otel]` table crow wrote, whatever its port (when no manifest remembers it). */
+const OTEL_UNIT_RE =
+  /^\[otel\]\nexporter = \{ otlp-http = \{ endpoint = "http:\/\/127\.0\.0\.1:\d+\/v1\/logs", protocol = "json" \} \}$/;
 
 /** Text of the group crow writes for one event. */
 export function codexGroupText(event: string, ctx: AttachContext): string {
@@ -61,6 +77,7 @@ function eventGroups(parsed: Obj, event: string): unknown[] {
 /** Data with crow groups removed and emptied `hooks` containers pruned. */
 function normalized(parsed: Obj, dropCrowIn: readonly string[]): unknown {
   const copy = JSON.parse(JSON.stringify(parsed)) as Obj;
+  if (dropCrowIn.includes("otel")) delete copy["otel"];
   const hooks = copy["hooks"];
   if (isRecord(hooks)) {
     for (const [event, groups] of Object.entries(hooks)) {
@@ -97,11 +114,13 @@ function findBlock(lines: string[], path: string): Block | null {
 export interface CodexAttachPlan {
   after: string;
   added: string[];
+  /** The OTLP lane (R34): the `[otel]` table written, or omitted on conflict. */
+  otlp: OtlpLane;
   manifest: Manifest;
   warnings: string[];
 }
 
-/** Computes the attach change; pure. Verifies that only crow groups were added. */
+/** Computes the attach change; pure. Verifies that only crow groups and `[otel]` were added. */
 export function planCodexAttach(
   before: string | null,
   prior: Manifest | null,
@@ -119,24 +138,50 @@ export function planCodexAttach(
   if (isRecord(otel) && otel["log_user_prompt"] === true) {
     warnings.push("[otel] log_user_prompt is enabled in your config; crow did not set it (R24)");
   }
+  // The lane is present when crow's block holds an `[otel]` table; any other one is the user's.
+  const existing = before === null ? [] : before.replace(/\n$/, "").split("\n");
+  const existingBlock = findBlock(existing, ctx.configPath);
+  const hasOtelUnit =
+    existingBlock !== null &&
+    existing.slice(existingBlock.start + 1, existingBlock.end).some((l) => /^\[otel\]\s*$/.test(l));
+  const otelConflict = parsed["otel"] !== undefined && !hasOtelUnit;
+  if (otelConflict) {
+    warnings.push(
+      "the OTLP lane was omitted for codex: your config already has an [otel] table (crow never overwrites yours)",
+    );
+  } else if (!hasOtelUnit && ctx.otlpPort !== DEFAULT_OTLP_PORT) {
+    warnings.push(
+      `OTLP port ${ctx.otlpPort} is not ${DEFAULT_OTLP_PORT}: Codex will export logs there`,
+    );
+  }
+  const addOtel = !otelConflict && !hasOtelUnit;
+  const otlp: OtlpLane = { active: !otelConflict, added: addOtel ? ["otel"] : [] };
   let after = before ?? "";
-  if (missing.length > 0) {
-    const text = missing.map((e) => codexGroupText(e, ctx)).join("\n\n");
+  if (missing.length > 0 || addOtel) {
+    // `[otel]` goes first in the block: a table after a `[[hooks.X.hooks]]` would swallow its keys.
+    const groups = missing.map((e) => codexGroupText(e, ctx)).join("\n\n");
     const lines = after === "" ? [] : after.replace(/\n$/, "").split("\n");
     const block = findBlock(lines, ctx.configPath);
+    const otelLines = addOtel
+      ? [...codexOtelText(ctx).split("\n"), ...(groups || block ? [""] : [])]
+      : [];
     if (block) {
-      lines.splice(block.end, 0, ...text.split("\n"));
+      lines.splice(block.start + 1, 0, ...otelLines);
+      lines.splice(block.end + otelLines.length, 0, ...(groups ? groups.split("\n") : []));
     } else {
       if (lines.length > 0) lines.push("");
-      lines.push(BLOCK_START, ...text.split("\n"), BLOCK_END);
+      lines.push(BLOCK_START, ...otelLines, ...(groups ? groups.split("\n") : []), BLOCK_END);
     }
     after = `${lines.join("\n")}\n`;
+    if (addOtel) units.push({ event: "otel", value: codexOtelText(ctx) });
     for (const event of missing) units.push({ event, value: codexGroupText(event, ctx) });
     const reparsed = parseCodexConfig(after, ctx.configPath);
     const complete = CODEX_EVENTS.every((e) => eventGroups(reparsed, e).some(isCrowGroup));
+    const dropped = [...CODEX_EVENTS, "otel"];
     if (
       !complete ||
-      !sameData(normalized(reparsed, CODEX_EVENTS), normalized(parsed, CODEX_EVENTS))
+      (otlp.active && !isRecord(reparsed["otel"])) ||
+      !sameData(normalized(reparsed, dropped), normalized(parsed, dropped))
     ) {
       throw new AttachError("cannot verify the attach result; nothing written");
     }
@@ -144,12 +189,14 @@ export function planCodexAttach(
   return {
     after,
     added: [...missing],
+    otlp,
     manifest: {
       version: 1,
       engine: "codex",
       configPath: ctx.configPath,
       units,
       created: { hooks: false, events: [] },
+      ...(prior?.otlpConfig ? { otlpConfig: prior.otlpConfig } : {}),
     },
     warnings,
   };
@@ -175,13 +222,16 @@ export function planCodexDetach(
   const parsed = parseCodexConfig(before, ctx.configPath);
   const lines = before.replace(/\n$/, "").split("\n");
   const block = findBlock(lines, ctx.configPath);
-  if (block === null) return { after: before, removed: [], kept: [], manifest: prior };
+  if (block === null) {
+    return { after: before, removed: [], kept: [], manifest: withoutStaleOtel(prior, false) };
+  }
 
   const inner = lines.slice(block.start + 1, block.end);
   const segments: Array<{ event: string | null; lines: string[] }> = [{ event: null, lines: [] }];
   for (const line of inner) {
     const m = /^\[\[hooks\.([A-Za-z]+)\]\]\s*$/.exec(line);
     if (m) segments.push({ event: m[1] ?? null, lines: [line] });
+    else if (/^\[otel\]\s*$/.test(line)) segments.push({ event: "otel", lines: [line] });
     else segments[segments.length - 1]!.lines.push(line);
   }
   const removed: string[] = [];
@@ -192,13 +242,18 @@ export function planCodexDetach(
       keptLines.push(...seg.lines);
       continue;
     }
-    const expected = String(
-      prior?.units.find((u) => u.event === seg.event)?.value ?? codexGroupText(seg.event, ctx),
-    );
+    const recorded = prior?.units.find((u) => u.event === seg.event)?.value;
     // Trailing comments and blank lines are the user's own additions, not part of the unit.
     let cut = seg.lines.length;
     while (cut > 0 && /^\s*(#.*)?$/.test(seg.lines[cut - 1]!)) cut--;
-    if (seg.lines.slice(0, cut).join("\n") === expected.trimEnd()) {
+    const text = seg.lines.slice(0, cut).join("\n");
+    const intact =
+      recorded !== undefined
+        ? text === String(recorded).trimEnd()
+        : seg.event === "otel"
+          ? OTEL_UNIT_RE.test(text)
+          : text === codexGroupText(seg.event, ctx);
+    if (intact) {
       removed.push(seg.event);
       keptLines.push(...seg.lines.slice(cut));
     } else {
@@ -206,7 +261,10 @@ export function planCodexDetach(
       keptLines.push(...seg.lines);
     }
   }
-  if (removed.length === 0) return { after: before, removed, kept, manifest: prior };
+  const hasOtelSegment = segments.some((seg) => seg.event === "otel");
+  if (removed.length === 0) {
+    return { after: before, removed, kept, manifest: withoutStaleOtel(prior, hasOtelSegment) };
+  }
 
   const outLines = [
     ...lines.slice(0, block.start),
@@ -231,8 +289,22 @@ export function planCodexDetach(
     manifest:
       prior === null
         ? null
-        : { ...prior, units: prior.units.filter((u) => !removed.includes(u.event)) },
+        : {
+            ...prior,
+            units: prior.units.filter(
+              (u) => !removed.includes(u.event) && (u.event !== "otel" || hasOtelSegment),
+            ),
+          },
   };
+}
+
+/**
+ * The manifest without the `otel` unit when the user deleted the `[otel]` table by hand
+ * (`present` false), so a stale unit cannot keep the OTLP receiver on. Same object otherwise.
+ */
+function withoutStaleOtel(prior: Manifest | null, present: boolean): Manifest | null {
+  if (prior === null || present || !prior.units.some((u) => u.event === "otel")) return prior;
+  return { ...prior, units: prior.units.filter((u) => u.event !== "otel") };
 }
 
 function trimEdges(kept: string[]): string[] {

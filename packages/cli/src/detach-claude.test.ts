@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { runAttach } from "./attach";
 import { manifestPath, buildContext } from "./attach-common";
@@ -51,7 +59,8 @@ describe("crow detach claude", () => {
     await attached("{}\n");
     const backupsBefore = sb.backups().length;
     await runDetach(["claude", "--yes"], sb.io);
-    expect(sb.backups().length).toBe(backupsBefore + 1);
+    // The engine config and crow's own config.json (turned off) are both backed up.
+    expect(sb.backups().length).toBe(backupsBefore + 2);
   });
 
   // Covers: R26
@@ -103,7 +112,8 @@ describe("crow detach claude", () => {
     const ctx = buildContext({ engine: "claude", yes: true }, sb.io);
     await Bun.file(manifestPath(ctx)).delete();
     expect(await runDetach(["claude", "--yes"], sb.io)).toBe(0);
-    expect(settings()).toEqual({});
+    // Hooks go by signature; without a manifest crow cannot tell its env keys from the user's.
+    expect(Object.keys(settings())).toEqual(["env"]);
   });
 
   // Covers: R26
@@ -124,6 +134,102 @@ describe("crow detach claude", () => {
     expect(await runDetach(["claude", "--yes"], sb.io)).toBe(0);
     expect(sb.read()).toBe('{ "model": "opus" }\n');
     expect(sb.backups()).toEqual([]);
+  });
+
+  // Covers: R26, R34
+  test("removes the env keys crow wrote, keeps the user's, and turns config.json off", async () => {
+    const original = '{\n  "env": {\n    "MY_VAR": "1"\n  }\n}\n';
+    await attached(original);
+    expect(existsSync(join(sb.crowHome, "config.json"))).toBe(true);
+    expect(await runDetach(["claude", "--yes"], sb.io)).toBe(0);
+    expect(sb.read()).toBe(original);
+    expect(readFileSync(join(sb.crowHome, "config.json"), "utf8")).toBe("{}\n");
+  });
+
+  // Covers: R26
+  test("keeps an env key the user edited and reports it", async () => {
+    await attached("{}\n");
+    const s = settings();
+    (s["env"] as Record<string, string>)["OTEL_LOGS_EXPORT_INTERVAL"] = "5000";
+    sb.write(`${JSON.stringify(s, null, 2)}\n`);
+    expect(await runDetach(["claude", "--yes"], sb.io)).toBe(0);
+    expect(settings()).toEqual({ env: { OTEL_LOGS_EXPORT_INTERVAL: "5000" } });
+    expect(sb.output.join("\n")).toContain("kept crow entry env:OTEL_LOGS_EXPORT_INTERVAL");
+    // A unit is still there, so the receiver stays on.
+    expect(existsSync(join(sb.crowHome, "config.json"))).toBe(true);
+  });
+
+  // Covers: R34
+  test("config.json is shared: it stays until no engine keeps OTLP units", async () => {
+    await attached("{}\n");
+    const codex = sandbox("codex");
+    const both = { ...sb.io, env: { ...sb.io.env, CODEX_HOME: codex.configDir } };
+    try {
+      expect(await runAttach(["codex", "--yes"], both)).toBe(0);
+      expect(await runDetach(["claude", "--yes"], both)).toBe(0);
+      expect(existsSync(join(sb.crowHome, "config.json"))).toBe(true);
+      expect(sb.output.join("\n")).toContain("an engine still has OTLP settings");
+      expect(await runDetach(["codex", "--yes"], both)).toBe(0);
+      expect(readFileSync(join(sb.crowHome, "config.json"), "utf8")).toBe("{}\n");
+    } finally {
+      codex.cleanup();
+    }
+  });
+
+  // Covers: R34
+  test("a config.json the user edited is kept", async () => {
+    await attached("{}\n");
+    writeFileSync(
+      join(sb.crowHome, "config.json"),
+      '{ "otlp": { "enabled": true, "port": 5000 } }\n',
+    );
+    expect(await runDetach(["claude", "--yes"], sb.io)).toBe(0);
+    expect(readFileSync(join(sb.crowHome, "config.json"), "utf8")).toContain("5000");
+    expect(sb.output.join("\n")).toContain("kept config.json");
+  });
+
+  // Covers: R26, R34
+  test("env keys the user deleted by hand are forgotten and config.json still turns off", async () => {
+    await attached("{}\n");
+    const again = settings();
+    delete again["env"];
+    delete again["hooks"];
+    sb.write(`${JSON.stringify(again, null, 2)}\n`);
+    expect(await runDetach(["claude", "--yes"], sb.io)).toBe(0);
+    expect(readFileSync(join(sb.crowHome, "config.json"), "utf8")).toBe("{}\n");
+    const manifest = readFileSync(
+      manifestPath(buildContext({ engine: "claude", yes: true }, sb.io)),
+      "utf8",
+    );
+    expect(manifest).not.toContain("env:");
+  });
+
+  // Covers: R34, R23
+  test("writes config.json through a symlink, with backups, never replacing the link", async () => {
+    sb = sandbox("claude");
+    mkdirSync(sb.crowHome, { recursive: true });
+    const real = join(sb.root, "dotfiles-crow.json");
+    writeFileSync(real, '{ "keep": 1 }\n');
+    symlinkSync(real, join(sb.crowHome, "config.json"));
+    await runAttach(["claude", "--yes"], sb.io);
+    expect(lstatSync(join(sb.crowHome, "config.json")).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(readFileSync(real, "utf8"))).toEqual({ keep: 1, otlp: { enabled: true } });
+    await runDetach(["claude", "--yes"], sb.io);
+    expect(lstatSync(join(sb.crowHome, "config.json")).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(readFileSync(real, "utf8"))).toEqual({ keep: 1 });
+    expect(sb.backups().length).toBeGreaterThanOrEqual(2);
+  });
+
+  // Covers: R21, D17
+  test("an edited env value that may carry a secret stays masked in the detach diff", async () => {
+    await attached("{}\n");
+    const s = settings();
+    (s["env"] as Record<string, string>)["OTEL_EXPORTER_OTLP_ENDPOINT"] =
+      "http://u:s3cr3t-pass@127.0.0.1:4318";
+    sb.write(`${JSON.stringify(s, null, 2)}\n`);
+    await runDetach(["claude", "--yes"], sb.io);
+    expect(sb.output.join("\n")).not.toContain("s3cr3t-pass");
+    expect(readFileSync(sb.configPath, "utf8")).toContain("s3cr3t-pass"); // kept, as edited
   });
 
   // Covers: R27
