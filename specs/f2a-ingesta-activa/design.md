@@ -89,6 +89,23 @@
   - manda `Host` loopback y ningún `Origin`;
   - `curl -s -m 2 … >/dev/null 2>&1 || true` con el puerto cerrado da código 0, stdout vacío y 10 ms.
 
+### Por B0 (✓, 2026-09-29)
+
+Claude Code 2.1.285 y Codex 0.158.0; formas y conteos en [`b0-bitacora.md`](b0-bitacora.md). Lo que contradice al documento (⚠) y lo que confirma (=):
+
+- ⚠ **`service.name` de Claude = `claude-code`** (la sección "doc" decía que no lo fija). Codex en `exec`: `codex_exec`.
+- ⚠ **MF9: el `env` de settings no llegó a los subprocesos de Bash** (`OTEL_*` = 0 en dos celdas), al revés de la suposición de D14. Caveat: modo `-p` y variables vía `--settings`; falta el TUI con `settings.json`. Las mitigaciones de D14 siguen valiendo, pero el riesgo de fuga es menor de lo supuesto.
+- ⚠ **El hook `http` de Claude no entrega `SessionStart`** (44 requests contra 45 con `command`).
+- ⚠ **Las líneas `hook_*` del transcript aparecen solo cuando el hook falla** (http abajo, colgado, 401 o 413: 42 líneas; con éxito o `command` async: 0). R33 no puede contar con ellas en el camino feliz.
+- ⚠ **`http` es visible en todos los fallos** (abajo, colgado, 401, 413) y con crow colgado suma ~4 s por tool call (p50 4046 ms contra 52 de base). Con `command`+`async` no hay error visible en `-p` ni latencia medible.
+- ⚠ **`request_id` no viaja en los hooks de Claude** (0 de 7): solo el carril OTel lo trae (7 de 7 contra `requestId` del transcript). `agent_id` no viaja en OTel.
+- ⚠ **Codex: `tool_use_id` de los comandos `Bash` en el hook es `exec-<uuid>`**, igual al `item.id` del rollout y **distinto** del `call_id` (`call_<…>`) de la `function_call`; para las herramientas de colaboración sí es el `call_id`. En OTel de Codex el atributo `call_id` contiene los 6 `tool_use_id` de hook, incluidos los `exec-<id>` de `Bash` (6/6): la unión hook ↔ OTel de Codex por id de llamada **sí está confirmada** (bitácora § G5a; fixtures `fixtures/codex/0.158.0`). Lo que difiere es el `call_id` de la `function_call` del rollout, que no coincide con el `exec-<id>` en shell (el rollout se une por `item.id`).
+- ⚠ **Codex `exec` no ejecuta hooks no confiados y no avisa**; el TUI muestra "Hooks need review" y la confianza solo cambia `config.toml` (`[hooks.state."…"] trusted_hash`).
+- = **`prompt_id` = `promptId`** (2 de 2, hook y OTel); **`tool_use_id` = `tool_use.id`** (7 de 7 en Claude, incluido el subagente, con el directorio del proyecto en `--transcript`; 20 de 20 en las celdas de 20 llamadas); **`agent_id` = `agentId`** (1 de 1 por hook).
+- = **Claves desconocidas en silencio:** Claude (`crowProbe`, http y command) y Codex (`crow_probe`, sin invalidar el hash de confianza).
+- = **Sin reintentos** de hooks; `PostToolUse` trae `duration_ms`; `SubagentStop` trae `agent_transcript_path`; `SubagentStart/Stop` existen en Codex.
+- **Sin reproducir (deuda):** `PermissionDenied` de Claude; `PermissionRequest`, `PreCompact` y `PostCompact` de Codex.
+
 ### Según la documentación que citó el challenge (doc)
 
 - **Hooks de Claude:**
@@ -615,6 +632,14 @@ Si falta `curl`, el shell también manda su error a `/dev/null` y el script sale
 - se registra: (1) error visible en la TUI, (2) líneas `hook_*` en el transcript, (3) latencia añadida por tool (p50 y p95 de 20 llamadas) y (4) si llegan los eventos.
 
 **Criterio:** gana `command`+`async` salvo que muestre errores visibles o pierda eventos que `http` no pierde. `fromHook` y R33 funcionan con cualquiera: la constante vive en el attacher.
+
+**Decisión (B0, 2026-09-29): el transporte de Claude es `command` + `async: true`.** Con el criterio de arriba, evidencia en [`b0-bitacora.md`](b0-bitacora.md) § G1:
+
+- `command`+`async` no muestra error visible con crow abajo, colgado, 401 ni 413; `http` lo muestra en los cuatro (stderr y `hook_response` de error o cancelado).
+- `command` no pierde eventos que `http` no pierda, y `http` pierde `SessionStart` (44 contra 45 requests).
+- Latencia con crow colgado: `http` p50 4046 ms contra 73 ms de `command`+`async` (base 52 ms).
+- `http` deja 42 líneas `hook_*` en el transcript cuando falla; `command` async, 0.
+- Caveat: medido con `claude -p` (stderr y `hook_response`), no con el TUI. Ajuste condicional de R5/R20: **no aplica** (ver B0.T1), porque con `command` el 413 y el 401 no se ven.
 
 **OTel de Claude (`env` en `settings.json`):**
 
