@@ -83,16 +83,18 @@ describe("startApp + handleRequest: guard and shutdown (R2, R28)", () => {
 });
 
 describe("startApp: hook lane wiring (F2a B2)", () => {
-  test("/api/stats carries lanes and an engine without fromHook answers 404 on /ingest/hook", async () => {
+  test("/api/stats carries lanes and an unregistered engine answers 404 on /ingest/hook", async () => {
     // Covers: R2, R28
     await withTempDir(async (dir) => {
       const handle = await startApp(testConfig(dir));
       try {
         const base = `http://127.0.0.1:${handle.server.port}`;
-        const res = await fetch(`${base}/ingest/hook/claude`, { method: "POST", body: "{}" });
+        const res = await fetch(`${base}/ingest/hook/gemini`, { method: "POST", body: "{}" });
         expect(res.status).toBe(404);
         const stats = (await (await fetch(`${base}/api/stats`)).json()) as StatsResponse;
-        expect(stats.lanes.engines.claude?.hook.rejected["unknown-engine"]).toBe(1);
+        // Lane stats track registered engines only (bounded keys): the unknown id is not counted.
+        expect(stats.lanes.engines.gemini).toBeUndefined();
+        expect(stats.lanes.engines.claude?.hook.rejected["unknown-engine"]).toBeUndefined();
       } finally {
         await handle.stop();
       }

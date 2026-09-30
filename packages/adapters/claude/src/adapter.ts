@@ -5,6 +5,7 @@
  */
 import type { AgentMetaPatch, CrowConfig, EngineAdapter, FileMatch } from "@crow/core";
 import { join, relative, sep } from "node:path";
+import { claudeFromHook } from "./hook";
 import { initialClaudeState, mapClaudeLine, restoreClaudeState } from "./map-line";
 import type { ClaudeState } from "./map-line";
 import { parseSidecarText, toAgentMetaPatch } from "./sidecar";
@@ -93,6 +94,8 @@ export const claudeAdapter: EngineAdapter<ClaudeState> = {
   },
 
   parseLine: mapClaudeLine,
+
+  fromHook: claudeFromHook,
 
   parseSidecar(text: string, match: FileMatch): AgentMetaPatch | null {
     const parsed = parseSidecarText(text);

@@ -121,7 +121,7 @@ function stopFromNotificationText(
 }
 
 /** D15: recursively trims a tool's `input` — strings to 1 KiB, depth to 3, and 30 entries per level. */
-function trimInput(value: unknown, depth = 0): unknown {
+export function trimInput(value: unknown, depth = 0): unknown {
   if (depth >= 3) return typeof value === "object" && value !== null ? "[truncated]" : value;
   if (typeof value === "string") return value.slice(0, 1024);
   if (Array.isArray(value)) return value.slice(0, 30).map((v) => trimInput(v, depth + 1));
