@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { runAttach } from "./attach";
 import { buildContext, manifestPath } from "./attach-common";
 import { sandbox } from "./attach-test-helpers";
@@ -46,7 +47,8 @@ describe("crow detach codex", () => {
     await attached('model = "x"\n');
     const n = sb.backups().length;
     await runDetach(["codex", "--yes"], sb.io);
-    expect(sb.backups().length).toBe(n + 1);
+    // The engine config and crow's own config.json (turned off) are both backed up.
+    expect(sb.backups().length).toBe(n + 2);
   });
 
   // Covers: R26
@@ -121,6 +123,50 @@ describe("crow detach codex", () => {
     expect(readFileSync(sb.configPath, "utf8")).toBe("[[hooks");
     expect(sb.output.join("\n")).toContain("cannot parse");
     expect(sb.backups()).toEqual([]);
+  });
+
+  // Covers: R26, R34
+  test("removes [otel] and turns config.json off", async () => {
+    await attached('model = "x"\n');
+    expect(sb.read()).toContain("[otel]");
+    expect(await runDetach(["codex", "--yes"], sb.io)).toBe(0);
+    expect(sb.read()).toBe('model = "x"\n');
+    expect(readFileSync(join(sb.crowHome, "config.json"), "utf8")).toBe("{}\n");
+  });
+
+  // Covers: R26, R34
+  test("a [otel] the user deleted by hand is forgotten and config.json still turns off", async () => {
+    await attached('model = "x"\n');
+    sb.write(sb.read().replace(/\[otel\]\nexporter = .*\n\n/, ""));
+    expect(sb.read()).not.toContain("[otel]");
+    expect(await runDetach(["codex", "--yes"], sb.io)).toBe(0);
+    expect(readFileSync(join(sb.crowHome, "config.json"), "utf8")).toBe("{}\n");
+    expect(sb.read()).toBe('model = "x"\n');
+  });
+
+  // Covers: R26, R34
+  test("with only the stale [otel] unit left, detach still updates the manifest and config.json", async () => {
+    await attached('model = "x"\n');
+    sb.write(sb.read().replace(/\[otel\]\nexporter = .*\n\n/, ""));
+    const ctx = buildContext({ engine: "codex", yes: true }, sb.io);
+    // Drop the hook groups too, so no engine entry is left to remove.
+    sb.write('model = "x"\n');
+    expect(await runDetach(["codex", "--yes"], sb.io)).toBe(0);
+    expect(readFileSync(join(sb.crowHome, "config.json"), "utf8")).toBe("{}\n");
+    expect(
+      existsSync(manifestPath(ctx)) ? readFileSync(manifestPath(ctx), "utf8") : "",
+    ).not.toContain('"otel"');
+  });
+
+  // Covers: R26
+  test("keeps an edited [otel] and reports it", async () => {
+    await attached('model = "x"\n');
+    sb.write(sb.read().replace("4318/v1/logs", "9999/v1/logs"));
+    expect(await runDetach(["codex", "--yes"], sb.io)).toBe(0);
+    expect(sb.read()).toContain("127.0.0.1:9999/v1/logs");
+    expect(Object.keys(parse()).sort()).toEqual(["model", "otel"]);
+    expect(sb.output.join("\n")).toContain("kept crow entry otel");
+    expect(existsSync(join(sb.crowHome, "config.json"))).toBe(true);
   });
 
   // Covers: R21, D17

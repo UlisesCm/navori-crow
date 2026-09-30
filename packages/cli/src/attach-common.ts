@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { loadConfig } from "@crow/core";
 import type { ConfigEnv } from "@crow/core";
+import { detectIndent } from "./diff";
 import type { DiffOptions } from "./diff";
 import { atomicWrite, resolveTarget, safeWrite } from "./fs-safe";
 import { generateHookScript } from "./hook-script";
@@ -124,6 +125,10 @@ export interface AttachContext {
   engine: Engine;
   crowHome: string;
   port: number;
+  /** Port of crow's OTLP receiver (R34); the lane-C endpoints point at it. */
+  otlpPort: number;
+  /** The shell environment, to detect `OTEL_*` the user already exports (D14). */
+  shellEnv: ConfigEnv;
   /** User-level config file of the engine (R23: the only engine file ever written). */
   configPath: string;
   /** `$CROW_HOME/hooks/crow-ingest-hook`. */
@@ -153,6 +158,8 @@ export function buildContext(args: ChangeArgs, io: AttachIo): AttachContext {
     engine: args.engine,
     crowHome: config.crowHome,
     port: args.port ?? config.crowPort,
+    otlpPort: config.otlpPort,
+    shellEnv: io.env,
     configPath: join(dir, args.engine === "claude" ? "settings.json" : "config.toml"),
     hookPath,
     hookCommand: `${shArg(hookPath)} ${args.engine}`,
@@ -182,8 +189,28 @@ export function readSnapshot(path: string): ConfigSnapshot {
 
 /** One unit crow wrote (D13): the exact value, so detach can tell if the user edited it. */
 export interface ManifestUnit {
+  /** Hook event, `env:<KEY>` (Claude OTLP env var) or `otel` (Codex `[otel]` table). */
   event: string;
   value: unknown;
+}
+
+/** What crow wrote in `$CROW_HOME/config.json` for the OTLP lane (R34). */
+export interface OtlpConfigValue {
+  enabled: true;
+  port?: number;
+}
+
+/** Whether a manifest unit belongs to the OTLP lane (D13: env key or `[otel]` table). */
+export function isOtlpUnit(u: ManifestUnit): boolean {
+  return u.event === "otel" || u.event.startsWith("env:");
+}
+
+/** Outcome of the OTLP lane in an attach plan. */
+export interface OtlpLane {
+  /** The lane is (now) configured for the engine; `false` when omitted by a conflict. */
+  active: boolean;
+  /** Units written by this run (`env:<KEY>` or `otel`). */
+  added: string[];
 }
 
 export interface Manifest {
@@ -192,7 +219,9 @@ export interface Manifest {
   configPath: string;
   units: ManifestUnit[];
   /** Containers crow created (Claude); detach removes them only when they end up empty. */
-  created: { hooks: boolean; events: string[] };
+  created: { hooks: boolean; events: string[]; env?: boolean };
+  /** Set when the OTLP lane was configured: the `config.json` values crow wrote. */
+  otlpConfig?: OtlpConfigValue;
 }
 
 /** `$CROW_HOME/attach/<engine>-<sha1(realpath of the config)[:8]>.json`. */
@@ -285,17 +314,150 @@ export function reportBackup(io: AttachIo, backup: string | null): void {
 
 /**
  * Masking options of the diff shown by attach and detach (D17): every key of the settings
- * `env` object (`envBlock`, Claude only) plus the ingest token from the environment.
+ * `env` object (`envBlock`, Claude only) except the ones still holding exactly what crow wrote
+ * (`crowValues`: plain OTLP settings; an edited value may carry a secret, so it stays masked),
+ * plus the ingest token from the environment.
  */
 export function maskOptions(
   label: string,
   envBlock: unknown,
   io: AttachIo,
+  crowValues: Readonly<Record<string, unknown>> = {},
 ): DiffOptions & { label: string } {
   const token = io.env["CROW_TOKEN"];
   return {
     label,
-    maskKeys: isRecord(envBlock) ? Object.keys(envBlock) : [],
+    maskKeys: isRecord(envBlock)
+      ? Object.keys(envBlock).filter(
+          (k) => !(k in crowValues && sameData(envBlock[k], crowValues[k])),
+        )
+      : [],
     ...(token ? { secrets: [token] } : {}),
   };
+}
+
+/** `env` values crow recorded in the manifest, by key. */
+export function crowEnvValues(manifest: Manifest | null): Record<string, unknown> {
+  return Object.fromEntries(
+    (manifest?.units ?? [])
+      .filter((u) => u.event.startsWith("env:"))
+      .map((u) => [u.event.slice("env:".length), u.value]),
+  );
+}
+
+/** Shell value that counts as set (blank is unset). */
+export function shellValue(ctx: AttachContext, key: string): string | undefined {
+  const v = ctx.shellEnv[key];
+  return v !== undefined && v.trim() !== "" ? v : undefined;
+}
+
+/** Port of the OTLP receiver in the default OTel endpoint. */
+export const DEFAULT_OTLP_PORT = 4318;
+
+function crowConfigPath(ctx: AttachContext): string {
+  return join(ctx.crowHome, "config.json");
+}
+
+/** Parses `$CROW_HOME/config.json` (`{}` when missing); unusable content aborts (R27). */
+function readCrowConfig(ctx: AttachContext): {
+  text: string | null;
+  data: Record<string, unknown>;
+} {
+  const path = crowConfigPath(ctx);
+  if (!existsSync(path)) return { text: null, data: {} };
+  const text = readFileSync(path, "utf8");
+  if (text.trim() === "") return { text, data: {} };
+  try {
+    const data: unknown = JSON.parse(text);
+    if (isRecord(data) && (data["otlp"] === undefined || isRecord(data["otlp"]))) {
+      return { text, data };
+    }
+  } catch {
+    // Falls through to the error below.
+  }
+  throw new AttachError(`cannot parse ${path}; nothing written`);
+}
+
+/** The `$CROW_HOME/config.json` change of the OTLP lane (R34). */
+export interface OtlpConfigPlan {
+  path: string;
+  after: string | null;
+  changed: boolean;
+  value: OtlpConfigValue;
+}
+
+/** Plans `{ otlp: { enabled: true, port? } }` in `$CROW_HOME/config.json`, keeping other keys. */
+export function planOtlpConfigOn(ctx: AttachContext): OtlpConfigPlan {
+  const { text, data } = readCrowConfig(ctx);
+  const value: OtlpConfigValue = {
+    enabled: true,
+    ...(ctx.otlpPort !== DEFAULT_OTLP_PORT ? { port: ctx.otlpPort } : {}),
+  };
+  const otlp = isRecord(data["otlp"]) ? data["otlp"] : {};
+  const next = { ...data, otlp: { ...otlp, ...value } };
+  const changed = !sameData(next, data);
+  const indent = text !== null && text.trim() !== "" ? detectIndent(text) : "  ";
+  return {
+    path: crowConfigPath(ctx),
+    after: changed ? `${JSON.stringify(next, null, indent)}\n` : text,
+    changed,
+    value,
+  };
+}
+
+/**
+ * Plans turning the OTLP receiver off again (detach): removes the `enabled`/`port` crow wrote,
+ * only if the user did not edit them. A file left empty is written as `{}` (never deleted, so
+ * the backup and symlink handling of `safeWrite` always apply).
+ */
+export function planOtlpConfigOff(
+  ctx: AttachContext,
+  written: OtlpConfigValue,
+): { plan: OtlpConfigPlan | null; edited: boolean } {
+  const { text, data } = readCrowConfig(ctx);
+  const otlp = data["otlp"];
+  if (text === null || !isRecord(otlp)) return { plan: null, edited: false };
+  if (otlp["enabled"] !== true || otlp["port"] !== written.port) {
+    return { plan: null, edited: true };
+  }
+  const { enabled: _e, port: _p, ...rest } = otlp;
+  const { otlp: _o, ...others } = data;
+  const next: Record<string, unknown> = {
+    ...others,
+    ...(Object.keys(rest).length > 0 ? { otlp: rest } : {}),
+  };
+  const indent = text.trim() !== "" ? detectIndent(text) : "  ";
+  return {
+    plan: {
+      path: crowConfigPath(ctx),
+      after: Object.keys(next).length === 0 ? "{}\n" : `${JSON.stringify(next, null, indent)}\n`,
+      changed: true,
+      value: written,
+    },
+    edited: false,
+  };
+}
+
+/** Writes or deletes `$CROW_HOME/config.json` through the guarded writer (backup, symlinks). */
+export function applyOtlpConfig(ctx: AttachContext, plan: OtlpConfigPlan, io: AttachIo): void {
+  if (plan.after === null) return;
+  mkdirSync(ctx.crowHome, { recursive: true, mode: 0o700 });
+  safeWrite(plan.path, plan.after, {
+    crowHome: ctx.crowHome,
+    engine: ctx.engine,
+    ...(io.now ? { now: io.now } : {}),
+  });
+}
+
+/** Whether the other engine's manifest still holds OTLP units (unreadable counts as yes). */
+export function otherEngineHasOtlp(args: ChangeArgs, io: AttachIo): boolean {
+  const other: Engine = args.engine === "claude" ? "codex" : "claude";
+  try {
+    const ctx = buildContext({ ...args, engine: other }, io);
+    // No config directory means nothing was ever attached (and no manifest can be located).
+    if (!existsSync(dirname(ctx.configPath))) return false;
+    return readManifest(ctx)?.units.some(isOtlpUnit) ?? false;
+  } catch {
+    return true;
+  }
 }

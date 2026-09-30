@@ -15,6 +15,14 @@ interface Handler {
   async: boolean;
   timeout: number;
 }
+const otlpEnv = (port = 4318): Record<string, string> => ({
+  CLAUDE_CODE_ENABLE_TELEMETRY: "1",
+  OTEL_LOGS_EXPORTER: "otlp",
+  OTEL_METRICS_EXPORTER: "otlp",
+  OTEL_EXPORTER_OTLP_PROTOCOL: "http/json",
+  OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${port}`,
+  OTEL_LOGS_EXPORT_INTERVAL: "1000",
+});
 type Settings = { hooks: Record<string, Array<{ hooks: Handler[] }>>; [k: string]: unknown };
 
 describe("crow attach claude", () => {
@@ -163,13 +171,15 @@ describe("crow attach claude", () => {
     sb.write('{ "env": { "OTEL_LOG_USER_PROMPTS": "1" } }\n');
     await runAttach(["claude", "--yes"], sb.io);
     const s = JSON.parse(sb.read()) as Settings;
-    expect(s["env"]).toEqual({ OTEL_LOG_USER_PROMPTS: "1" }); // untouched, not added by crow
+    // The user's flag is untouched and crow only adds its closed OTLP list (R34).
+    expect(s["env"]).toEqual({ OTEL_LOG_USER_PROMPTS: "1", ...otlpEnv() });
     expect(sb.output.join("\n")).toContain("OTEL_LOG_USER_PROMPTS is enabled");
 
     const clean = sandbox("claude");
     try {
       await runAttach(["claude", "--yes"], clean.io);
       const text = clean.read();
+      expect(text).toContain("OTEL_EXPORTER_OTLP_ENDPOINT");
       for (const f of [
         "OTEL_LOG_USER_PROMPTS",
         "OTEL_LOG_TOOL_DETAILS",
@@ -200,5 +210,76 @@ describe("crow attach claude", () => {
     sb.write('{"model":"opus",\n      "theme":   "dark"}');
     await runAttach(["claude", "--yes"], sb.io);
     expect(sb.output.join("\n")).toMatch(/lines change only in format/);
+  });
+});
+
+describe("crow attach claude: OTLP lane", () => {
+  const crowConfig = (): unknown =>
+    JSON.parse(readFileSync(join(sb.crowHome, "config.json"), "utf8"));
+
+  // Covers: R34, R24
+  test("writes exactly the D14 env keys, no content flags, and enables the receiver", async () => {
+    sb = sandbox("claude");
+    sb.write('{ "model": "opus" }\n');
+    expect(await runAttach(["claude", "--yes"], sb.io)).toBe(0);
+    const s = JSON.parse(sb.read()) as Settings;
+    expect(s["env"]).toEqual(otlpEnv());
+    expect(crowConfig()).toEqual({ otlp: { enabled: true } });
+    expect(sb.output.join("\n")).toContain("restart crow");
+  });
+
+  // Covers: R34
+  test("uses the crow otlpPort in the endpoint and persists a non-default port", async () => {
+    sb = sandbox("claude");
+    sb.io = { ...sb.io, env: { ...sb.io.env, CROW_OTLP_PORT: "4999" } };
+    await runAttach(["claude", "--yes"], sb.io);
+    expect((JSON.parse(sb.read()) as Settings)["env"]).toEqual(otlpEnv(4999));
+    expect(crowConfig()).toEqual({ otlp: { enabled: true, port: 4999 } });
+    expect(sb.output.join("\n")).toContain("redirects the OTLP exporters");
+  });
+
+  // Covers: R34, R25
+  test("a second attach changes nothing, including config.json", async () => {
+    sb = sandbox("claude");
+    await runAttach(["claude", "--yes"], sb.io);
+    const settings = sb.read();
+    const cfg = readFileSync(join(sb.crowHome, "config.json"), "utf8");
+    expect(await runAttach(["claude", "--yes"], sb.io)).toBe(0);
+    expect(sb.read()).toBe(settings);
+    expect(readFileSync(join(sb.crowHome, "config.json"), "utf8")).toBe(cfg);
+    expect(sb.output.join("\n")).toContain("already attached");
+  });
+
+  // Covers: R34
+  test("a user OTEL value in settings.json omits the lane and keeps theirs", async () => {
+    sb = sandbox("claude");
+    sb.write('{ "env": { "OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4317" } }\n');
+    expect(await runAttach(["claude", "--yes"], sb.io)).toBe(0);
+    const s = JSON.parse(sb.read()) as Settings;
+    expect(s["env"]).toEqual({ OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4317" });
+    expect(Object.keys(s.hooks)).toHaveLength(15);
+    expect(existsSync(join(sb.crowHome, "config.json"))).toBe(false);
+    expect(sb.output.join("\n")).toContain("OTLP lane was omitted for claude");
+  });
+
+  // Covers: R34
+  test("a shell OTEL_* with another value omits the lane", async () => {
+    sb = sandbox("claude");
+    sb.io = { ...sb.io, env: { ...sb.io.env, OTEL_LOGS_EXPORTER: "console" } };
+    await runAttach(["claude", "--yes"], sb.io);
+    expect((JSON.parse(sb.read()) as Settings)["env"]).toBeUndefined();
+    expect(existsSync(join(sb.crowHome, "config.json"))).toBe(false);
+    expect(sb.output.join("\n")).toContain("OTEL_LOGS_EXPORTER");
+  });
+
+  // Covers: R34, R21
+  test("keeps other keys of config.json and never prints secrets in the diff", async () => {
+    sb = sandbox("claude");
+    mkdirSync(sb.crowHome, { recursive: true });
+    await Bun.write(join(sb.crowHome, "config.json"), '{ "other": 1 }\n');
+    sb.write('{ "env": { "API_SECRET": "s3cr3t-value" } }\n');
+    await runAttach(["claude", "--yes"], sb.io);
+    expect(crowConfig()).toEqual({ other: 1, otlp: { enabled: true } });
+    expect(sb.output.join("\n")).not.toContain("s3cr3t-value");
   });
 });
