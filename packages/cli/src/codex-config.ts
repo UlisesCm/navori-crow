@@ -43,7 +43,8 @@ export function parseCodexConfig(text: string | null, path: string): Obj {
   throw new AttachError(`cannot parse ${path}; nothing written`);
 }
 
-function isCrowGroup(group: unknown): boolean {
+/** Whether a `[[hooks.X]]` group holds a crow handler (by command signature, D13). */
+export function isCrowGroup(group: unknown): boolean {
   if (!isRecord(group) || !Array.isArray(group["hooks"])) return false;
   const re = crowCommandRe("codex");
   return group["hooks"].some(
