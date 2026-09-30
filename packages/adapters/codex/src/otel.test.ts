@@ -146,6 +146,8 @@ describe("codex fromOtel: R19 events on the B0 capture", () => {
         ].includes(r.name)
       )
         continue;
+      // The spawn/send record is mapped (D19 B1, below); its `receive` and `result` siblings are not.
+      if (r.name === "codex.agent_communication" && r.attrs.kind === "spawn") continue;
       expect(codexAdapter.fromOtel!(r)).toEqual({ ok: true, events: [] });
     }
   });
@@ -171,5 +173,99 @@ describe("codex fromOtel: no content (R24)", () => {
     // Covers: R19
     const foreign: FlatOtelRecord = { ...records[0]!, name: "user_prompt", service: "my-app" };
     expect(codexAdapter.ownsOtel!(foreign)).toBe(false);
+  });
+});
+
+/** A `codex.agent_communication` record with only the attributes a test names. */
+function comm(attrs: Record<string, string>): FlatOtelRecord {
+  const base = records.find((x) => x.name === "codex.agent_communication");
+  if (base === undefined) throw new Error("fixture has no codex.agent_communication");
+  return { ...base, attrs };
+}
+
+describe("codex fromOtel: agent_communication spawn (D19 B1)", () => {
+  const spawn = {
+    kind: "spawn",
+    state: "send",
+    sender_thread_id: "rootT",
+    receiver_thread_id: "kidT",
+  };
+
+  test("spawn/send -> one agent.start routed by the sender, keyed by the receiver", () => {
+    // Covers: R19, R35
+    const res = codexAdapter.fromOtel!(comm(spawn));
+    expect(res).toEqual({
+      ok: true,
+      events: [
+        {
+          sessionId: "rootT",
+          agentId: "kidT",
+          parentAgentId: null,
+          kind: "agent.start",
+          ts: expect.any(Number),
+          match: { key: "agent-start:kidT", mode: "exact" },
+        },
+      ],
+    });
+  });
+
+  test("the same record twice maps to the same event (stateless, repeats are the store's dedupe)", () => {
+    // Covers: R19, R35
+    const r = comm(spawn);
+    expect(codexAdapter.fromOtel!(r)).toEqual(codexAdapter.fromOtel!(r));
+  });
+
+  test("kind=result, state=receive and other kinds map to nothing", () => {
+    // Covers: R19, R35
+    for (const attrs of [
+      { ...spawn, kind: "result" },
+      { ...spawn, state: "receive" },
+      { ...spawn, kind: "interrupt" },
+      { state: "receive" },
+    ]) {
+      expect(codexAdapter.fromOtel!(comm(attrs))).toEqual({ ok: true, events: [] });
+    }
+  });
+
+  test("a spawn without both thread ids is unattributable", () => {
+    // Covers: R19, R35
+    const { receiver_thread_id: _r, ...noReceiver } = spawn;
+    const { sender_thread_id: _s, ...noSender } = spawn;
+    for (const attrs of [noReceiver, noSender]) {
+      expect(codexAdapter.fromOtel!(comm(attrs))).toMatchObject({
+        ok: false,
+        reason: "unattributable",
+      });
+    }
+  });
+
+  test("the content attribute never reaches the output (D17)", () => {
+    // Covers: R19, R35
+    const res = codexAdapter.fromOtel!(comm({ ...spawn, content: "SENTINEL-SECRET-PROMPT" }));
+    expect(JSON.stringify(res)).not.toContain("SENTINEL-SECRET-PROMPT");
+  });
+
+  test("order tripwire: on the 0.158.0 capture each receiver's spawn precedes its mapped records", () => {
+    // Covers: R19, R35
+    // [SIN VERIFICAR] one captured export: fails only if the mapper or the fixture changes.
+    const body: unknown = JSON.parse(
+      readFileSync(join(FIXTURE, "..", "..", "codex", "0.158.0", "otlp-logs.jsonl"), "utf8"),
+    );
+    const capture = flattenOtlp("logs", body);
+    if (capture === null) throw new Error("capture is not an OTLP logs body");
+    const all = capture.records;
+    const spawns = all
+      .map((r, i) => ({ r, i }))
+      .filter(({ r }) => r.attrs.kind === "spawn" && r.attrs.state === "send");
+    expect(spawns.length).toBeGreaterThan(0);
+    for (const { r, i } of spawns) {
+      const receiver = String(r.attrs.receiver_thread_id);
+      const firstMapped = all.findIndex((x, j) => {
+        if (j === i || x.attrs["conversation.id"] !== receiver) return false;
+        const out = codexAdapter.fromOtel!(x);
+        return out.ok && out.events.length > 0;
+      });
+      expect(firstMapped).toBeGreaterThan(i);
+    }
   });
 });

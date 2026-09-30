@@ -303,8 +303,11 @@ export function mergeContribution(
     const value = incomingUnits[name];
     const held = target[name];
     const heldRole = prov[name];
+    // `null` counts as absent for the parent (D19 B1): a hook's null never overrides an OTel parent.
+    if (name === "parentAgentId" && value === null) continue;
     const wins =
       held === undefined ||
+      (name === "parentAgentId" && held === null) ||
       heldRole === undefined ||
       beats(name, { role, value }, { role: heldRole, value: held });
     if (!wins) continue;
