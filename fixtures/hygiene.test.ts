@@ -34,6 +34,9 @@ const PII_PATTERNS: { name: string; re: RegExp }[] = [
   { name: "OpenAI-shaped secret key", re: /\bsk-[A-Za-z0-9]{16,}/ },
   { name: "GitHub personal access token", re: /\bghp_[A-Za-z0-9]{20,}/ },
   { name: "AWS access key id", re: /\bAKIA[0-9A-Z]{16}\b/ },
+  // Raw API ids (`toolu_…`, `msg_…`, `req_…`) as a key OR a value. The anonymizer pseudonymises
+  // them to `idN`; the raw link to the original `tool_use.id` is unrecoverable by design.
+  { name: "raw API id (toolu_/msg_/req_)", re: /\b(?:toolu|msg|req)_[A-Za-z0-9]{6,}/ },
 ];
 
 function walk(dir: string): string[] {
@@ -76,6 +79,7 @@ describe("fixtures hygiene (risk R2)", () => {
       "OpenAI-shaped secret key": "sk-abcdefghijklmnopqrstuvwx",
       "GitHub personal access token": "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
       "AWS access key id": "AKIAABCDEFGHIJKLMNOP",
+      "raw API id (toolu_/msg_/req_)": "toolu_01CvbLVhVT7pTiHvGuzCfBYe",
     };
     for (const pattern of PII_PATTERNS) {
       const sample = positiveSamples[pattern.name];
@@ -157,17 +161,23 @@ function collectStructuralViolations(node: unknown, label: string): string[] {
   return violations;
 }
 
-/** Every `.jsonl`/`.json` file under `fixtures/claude/cc-*` and `fixtures/codex/*` — the anonymized
- * real fixtures, never `fixtures/claude/navori-audit/` (a pre-anonymizer literal copy, out of scope). */
+/** Every `.jsonl`/`.json` file under `fixtures/claude/cc-*`, `fixtures/claude/hooks`, `fixtures/otlp/{claude,codex}`
+ * and `fixtures/codex/*` (rollouts, `codex/hooks`, the `codex/<version>` sessions) — the anonymized real fixtures, never `fixtures/claude/navori-audit/` (a
+ * pre-anonymizer literal copy, out of scope). The B0 dirs (hooks, OTLP) also get the stricter
+ * allowlist check in `fixtures/b0-claude.test.ts` / `fixtures/b0-codex.test.ts`. */
 function anonymizedFixtureFiles(): string[] {
   const out: string[] = [];
   const claudeDir = join(FIXTURES_ROOT, "claude");
   if (existsSync(claudeDir)) {
     for (const entry of readdirSync(claudeDir)) {
-      if (!entry.startsWith("cc-")) continue;
+      if (!entry.startsWith("cc-") && entry !== "hooks") continue;
       const full = join(claudeDir, entry);
       if (statSync(full).isDirectory()) out.push(...walk(full));
     }
+  }
+  for (const engine of ["claude", "codex"]) {
+    const otlpDir = join(FIXTURES_ROOT, "otlp", engine);
+    if (existsSync(otlpDir)) out.push(...walk(otlpDir));
   }
   const codexDir = join(FIXTURES_ROOT, "codex");
   if (existsSync(codexDir)) {
@@ -184,6 +194,14 @@ describe("fixtures hygiene (risk R2): structural contract on anonymized fixtures
     // Covers: risk R2. Walks `fixtures/claude/cc-*/` and every `fixtures/codex/<version>/` rollout.
     const files = anonymizedFixtureFiles();
     expect(files.some((f) => f.includes(`${join("fixtures", "codex")}/`))).toBe(true); // not vacuous
+    for (const dir of [
+      join("claude", "hooks"),
+      join("otlp", "claude"),
+      join("codex", "hooks"),
+      join("otlp", "codex"),
+    ]) {
+      expect(files.some((f) => f.includes(`${dir}/`))).toBe(true); // B0 dirs are covered too
+    }
     const violations: string[] = [];
     for (const file of files) {
       const label = relative(FIXTURES_ROOT, file);
