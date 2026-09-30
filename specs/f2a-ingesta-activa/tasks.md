@@ -18,11 +18,11 @@ Lotes de 1–3 tareas; cada tarea declara los `R<n>` que cubre y sus tests (todo
 
 - [x] **B2.T1** (R6, R7) — `IngestQueue` (D2): dos FIFO acotadas y un drenador, cuota por motor, bisección de poison pills y backoff ante `SQLITE_FULL`; `ingest.error` por episodio de desborde. · tests: `ingest-queue.test.ts`.
 - [x] **B2.T2** (R1, R2, R3, R4, R5, R28) — `POST /ingest/hook/:engine` (D3): 204 inmediato, 404 por motor sin hooks, 401 por token, guard compartido con `/api/*`, 413 por tope de 1 MiB con `Content-Length` o chunked; `LaneMonitor` y `/api/stats.lanes`. · tests: `ingest-route.test.ts`, `guard.test.ts`.
-- [ ] **B2.T3** (R8, R10, R31, R32) — `fromHook` de Claude con los 15 eventos de R8 sobre las capturas de B0 (`Stop`/`StopFailure` → `turn.end`) y el presupuesto de latencia. · tests: `packages/adapters/claude/src/hook.test.ts`, `e2e/hook-latency.test.ts`.
+- [x] **B2.T3** (R8, R10, R31, R32) — `fromHook` de Claude con los 15 eventos de R8 sobre las capturas de B0 (`Stop`/`StopFailure` → `turn.end`) y el presupuesto de latencia. · tests: `packages/adapters/claude/src/hook.test.ts`, `e2e/hook-latency.test.ts`. **Hecho (2026-09-30).** Deuda: forma real de `PermissionDenied` sin verificar (caso sintético).
 
 ## B3 · hooks de Codex (depende de B2)
 
-- [ ] **B3.T1** (R9, R10, R13) — `fromHook` de Codex sobre las capturas de B0 y, solo si G2 lo pide, resolución de hilos por `transcript_path`; prompt de Codex a un solo hecho entre carriles. · tests: `packages/adapters/codex/src/hook.test.ts`, `store/reconcile.test.ts` (prompt de Codex).
+- [x] **B3.T1** (R9, R10, R13) — `fromHook` de Codex sobre las capturas de B0 y, solo si G2 lo pide, resolución de hilos por `transcript_path`; prompt de Codex a un solo hecho entre carriles. · tests: `packages/adapters/codex/src/hook.test.ts`, `store/reconcile.test.ts` (prompt de Codex). **Hecho (2026-09-30).** Sin resolución por `transcript_path` (G2: `session_id` siempre raíz). Deuda: `exec-<id>` de Bash no se funde con `call_id` del rollout hasta que `map-line` use `item.id`.
 
 ## B4 · receptor OTLP (depende de B1)
 
