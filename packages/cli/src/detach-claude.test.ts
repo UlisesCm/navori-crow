@@ -5,9 +5,14 @@ import { runAttach } from "./attach";
 import { manifestPath, buildContext } from "./attach-common";
 import { sandbox } from "./attach-test-helpers";
 import type { Sandbox } from "./attach-test-helpers";
+import type { AttachIo } from "./attach-common";
 import { runDetach } from "./detach";
 
 let sb: Sandbox;
+const withToken = (): AttachIo => ({
+  ...sb.io,
+  env: { ...sb.io.env, CROW_TOKEN: "tok-ingest-777" },
+});
 afterEach(() => sb.cleanup());
 
 type Settings = {
@@ -129,5 +134,23 @@ describe("crow detach claude", () => {
     expect(readFileSync(sb.configPath, "utf8")).toBe("{ nope");
     expect(sb.output.join("\n")).toContain("cannot parse");
     expect(sb.backups()).toEqual([]);
+  });
+
+  // Covers: R21, D17
+  test("masks user env values without a secret-looking name in the detach diff", async () => {
+    await attached("{}\n");
+    // The user compacts the file to one line, so detach re-serializes (and shows) the env lines.
+    sb.write(`${JSON.stringify({ ...settings(), env: { MY_DIR: "plainvalue-42" } })}\n`);
+    await runDetach(["claude", "--yes"], sb.io);
+    const shown = sb.output.join("\n");
+    expect(shown).toContain("MY_DIR");
+    expect(shown).not.toContain("plainvalue-42");
+  });
+
+  // Covers: R21, D17
+  test("never shows CROW_TOKEN from the environment in the detach diff", async () => {
+    await attached('{"model":"opus","note":"tok-ingest-777"}\n');
+    await runDetach(["claude", "--yes"], withToken());
+    expect(sb.output.join("\n")).not.toContain("tok-ingest-777");
   });
 });

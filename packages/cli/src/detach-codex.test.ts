@@ -4,9 +4,14 @@ import { runAttach } from "./attach";
 import { buildContext, manifestPath } from "./attach-common";
 import { sandbox } from "./attach-test-helpers";
 import type { Sandbox } from "./attach-test-helpers";
+import type { AttachIo } from "./attach-common";
 import { runDetach } from "./detach";
 
 let sb: Sandbox;
+const withToken = (): AttachIo => ({
+  ...sb.io,
+  env: { ...sb.io.env, CROW_TOKEN: "tok-ingest-777" },
+});
 afterEach(() => sb.cleanup());
 
 type Parsed = { hooks?: Record<string, unknown[]>; [k: string]: unknown };
@@ -116,5 +121,13 @@ describe("crow detach codex", () => {
     expect(readFileSync(sb.configPath, "utf8")).toBe("[[hooks");
     expect(sb.output.join("\n")).toContain("cannot parse");
     expect(sb.backups()).toEqual([]);
+  });
+
+  // Covers: R21, D17
+  test("never shows a literal token outside crow's block in the detach diff", async () => {
+    await attached('model = "x"\n');
+    sb.write(`${sb.read()}\n[mcp]\nkey = "tok-ingest-777"\n`);
+    await runDetach(["codex", "--yes"], withToken());
+    expect(sb.output.join("\n")).not.toContain("tok-ingest-777");
   });
 });
