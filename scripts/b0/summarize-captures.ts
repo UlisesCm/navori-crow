@@ -275,7 +275,8 @@ export interface IdPair {
   label: string;
   /** Property names holding the id on the capture side (hook body key or OTLP attribute key). */
   captureKeys: string[];
-  /** Property names holding the id on the transcript side; `tool_use.id` = the `id` of a `tool_use` block. */
+  /** Property names holding the id on the transcript side; `tool_use.id` = the `id` of a `tool_use` block;
+   * `item.id` = the `payload.item.id` of a Codex `item_completed` event. */
   transcriptKeys: string[];
 }
 
@@ -296,9 +297,11 @@ export const CLAUDE_PAIRS: IdPair[] = [
 
 export const CODEX_PAIRS: IdPair[] = [
   {
-    label: "tool_use_id/call_id <-> call_id",
+    // A Codex `Bash` hook sends `tool_use_id = exec-<uuid>`, the rollout's `item_completed` item id (NOT
+    // the `function_call.call_id`); collaboration tools (`spawn_agent`, `wait_agent`) send the real `call_id`.
+    label: "tool_use_id/call_id <-> call_id|item.id",
     captureKeys: ["tool_use_id", "call_id"],
-    transcriptKeys: ["call_id"],
+    transcriptKeys: ["call_id", "item.id"],
   },
   { label: "turn_id <-> turn_id", captureKeys: ["turn_id"], transcriptKeys: ["turn_id"] },
   {
@@ -325,6 +328,10 @@ export function collectIds(v: Json, keys: Set<string>, into: IdSets): void {
   if (v === null || typeof v !== "object") return;
   if (keys.has("tool_use.id") && v["type"] === "tool_use" && typeof v["id"] === "string") {
     addId(into, "tool_use.id", v["id"]);
+  }
+  const item = asObj(v["item"]);
+  if (keys.has("item.id") && v["type"] === "item_completed" && typeof item?.["id"] === "string") {
+    addId(into, "item.id", item["id"]);
   }
   if (typeof v["key"] === "string" && keys.has(v["key"])) {
     const val = asObj(v["value"]);

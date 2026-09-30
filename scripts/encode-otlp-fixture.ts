@@ -5,9 +5,9 @@
  * `protobufjs` and the vendored `scripts/otlp-proto/otlp-subset.proto`. The
  * decoder under test never sees `protobufjs`; it only reads the `.bin`.
  *
- *   bun scripts/encode-otlp-fixture.ts
+ *   bun scripts/encode-otlp-fixture.ts [<dir with <signal>.json>]
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import protobuf from "protobufjs";
 
@@ -24,10 +24,13 @@ export const FIXTURE_DIR = join(import.meta.dir, "..", "fixtures", "otlp", "prot
 const PROTO = join(import.meta.dir, "otlp-proto", "otlp-subset.proto");
 
 /** Encodes `<signal>.json` with the oracle. Ids given as hex/base64 strings are converted to bytes first. */
-export async function encodeFixture(signal: OtlpFixtureSignal): Promise<Uint8Array> {
+export async function encodeFixture(
+  signal: OtlpFixtureSignal,
+  dir: string = FIXTURE_DIR,
+): Promise<Uint8Array> {
   const root = await protobuf.load(PROTO);
   const type = root.lookupType(`crow.otlp.subset.${REQUEST_TYPE[signal]}`);
-  const json: unknown = JSON.parse(readFileSync(join(FIXTURE_DIR, `${signal}.json`), "utf8"));
+  const json: unknown = JSON.parse(readFileSync(join(dir, `${signal}.json`), "utf8"));
   const message = type.fromObject(hexIdsToBase64(json) as Record<string, unknown>);
   return type.encode(message).finish();
 }
@@ -47,9 +50,13 @@ function hexIdsToBase64(node: unknown): unknown {
 }
 
 if (import.meta.main) {
+  // Optional first argument: another fixture dir (e.g. `fixtures/otlp/claude`) holding `<signal>.json`.
+  // A signal without a `.json` there is skipped (`fixtures/otlp/codex` only carries logs).
+  const dir = process.argv[2] ?? FIXTURE_DIR;
   for (const signal of OTLP_SIGNALS) {
-    const bytes = await encodeFixture(signal);
-    writeFileSync(join(FIXTURE_DIR, `${signal}.bin`), bytes);
+    if (!existsSync(join(dir, `${signal}.json`))) continue;
+    const bytes = await encodeFixture(signal, dir);
+    writeFileSync(join(dir, `${signal}.bin`), bytes);
     console.log(`${signal}.bin  ${bytes.length} bytes`);
   }
 }

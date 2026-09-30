@@ -1,0 +1,7 @@
+{
+  "session_id": "id0",
+  "transcript_path": "/tmp/crow-fixture/codex-home/sessions/2026/01/01/rollout-2026-01-01T00-00-00-id0.jsonl",
+  "cwd": "/tmp/crow-fixture/b0-toy",
+  "hook_event_name": "SessionEnd",
+  "reason": "other"
+}

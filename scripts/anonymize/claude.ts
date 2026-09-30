@@ -24,6 +24,8 @@
  */
 import type { FileMatch, Rec } from "@crow/core";
 import { arr, isRec } from "@crow/core";
+import type { IdPseudonymizer } from "./shared";
+import { IdRegistry } from "./shared";
 
 /** One file to anonymize, already classified by `claudeAdapter.matches`. */
 export interface AnonymizeSourceFile {
@@ -44,6 +46,13 @@ export interface AnonymizeOptions {
   repo: string;
   /** ISO instant the earliest event is shifted to. Default `2026-01-01T00:00:00.000Z`. */
   epochIso?: string;
+  /**
+   * Shared id registry: pass the same one to `anonymizeHookPayload`/`anonymizeOtlp` so one raw id
+   * maps to one pseudonym across the transcript, hook and OTLP lanes of a session. Default: private.
+   */
+  ids?: IdPseudonymizer;
+  /** Explicit timestamp offset (ms), overriding the "earliest event lands on `epochIso`" default. */
+  tsOffsetMs?: number;
 }
 
 const DEFAULT_EPOCH_ISO = "2026-01-01T00:00:00.000Z";
@@ -126,6 +135,13 @@ const ALLOWLISTED_STRING_KEYS = new Set([
  */
 export const IDENTIFIER_KEY_RE = /^[A-Za-z_$][A-Za-z0-9_$-]{0,63}$/;
 
+/**
+ * A tool-call id used AS an object key (cc-2.1.285's `wireToolInputs` is a map keyed by `tool_use_id`).
+ * It is identifier-shaped, so without this rule it would survive verbatim and break cross-lane id
+ * equality; it gets the same pseudonym as the id in value position.
+ */
+const TOOL_USE_ID_KEY_RE = /^toolu_[A-Za-z0-9]{1,58}$/;
+
 /** Extracts `<tag>value</tag>`, mirroring `map-line.ts`'s private helper of the same name. */
 function extractXmlTag(text: string, tag: string): string | null {
   const match = new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(text);
@@ -135,24 +151,20 @@ function extractXmlTag(text: string, tag: string): string | null {
 /** Mutable, run-scoped anonymization context: id pseudonyms, free-text markers, the timestamp offset. */
 class AnonCtx {
   readonly newCwd: string;
-  private readonly ids = new Map<string, string>();
-  private idSeq = 0;
   private markerSeq = 0;
   private keySeq = 0;
   private tsOffsetMs = 0;
 
-  constructor(repo: string) {
+  constructor(
+    repo: string,
+    private readonly ids: IdPseudonymizer,
+  ) {
     this.newCwd = `/tmp/crow-fixture/${repo}`;
   }
 
   /** Same input value → same pseudonym, for every call across the whole fixture. */
   pseudonymize(value: string): string {
-    const existing = this.ids.get(value);
-    if (existing !== undefined) return existing;
-    const pseudo = `id${this.idSeq}`;
-    this.idSeq += 1;
-    this.ids.set(value, pseudo);
-    return pseudo;
+    return this.ids.pseudonymize(value);
   }
 
   /** A deterministic, sequential marker for a free-text string — not deduped by value (YAGNI: no test needs it). */
@@ -249,7 +261,9 @@ function anonymizeRecord(node: Rec, ctx: AnonCtx): unknown {
     node.type === "queued_command" && node.commandMode === "task-notification";
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(node)) {
-    if (!IDENTIFIER_KEY_RE.test(k)) {
+    if (TOOL_USE_ID_KEY_RE.test(k)) {
+      out[ctx.pseudonymize(k)] = anonymizeNode(v, ctx);
+    } else if (!IDENTIFIER_KEY_RE.test(k)) {
       out[ctx.keyMarker()] = anonymizeNode(v, ctx);
     } else if (k === "message" && isRec(v)) {
       out[k] = anonymizeMessage(v, node, ctx);
@@ -277,7 +291,7 @@ function anonymizeNode(node: unknown, ctx: AnonCtx): unknown {
 }
 
 /** Scans every `timestamp` field across every jsonl file to find the earliest instant. */
-function findMinTimestampMs(sourceFiles: AnonymizeSourceFile[]): number | null {
+export function findMinTimestampMs(sourceFiles: AnonymizeSourceFile[]): number | null {
   let min: number | null = null;
   for (const f of sourceFiles) {
     if (f.match.role === "sidecar") continue; // sidecars carry no `timestamp` field the adapter reads
@@ -351,10 +365,10 @@ export function anonymizeClaudeFixture(
   sourceFiles: AnonymizeSourceFile[],
   opts: AnonymizeOptions,
 ): AnonymizeOutputFile[] {
-  const ctx = new AnonCtx(opts.repo);
+  const ctx = new AnonCtx(opts.repo, opts.ids ?? new IdRegistry());
   const epochMs = Date.parse(opts.epochIso ?? DEFAULT_EPOCH_ISO);
   const minMs = findMinTimestampMs(sourceFiles);
-  ctx.setTimestampOffsetMs(minMs !== null ? epochMs - minMs : 0);
+  ctx.setTimestampOffsetMs(opts.tsOffsetMs ?? (minMs !== null ? epochMs - minMs : 0));
 
   const sorted = [...sourceFiles].sort((a, b) => a.relPath.localeCompare(b.relPath));
   return sorted.map((f) => ({
