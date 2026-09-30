@@ -109,8 +109,11 @@ function toolHookAt(callId: string, phase: "PreToolUse" | "PostToolUse"): number
  */
 function rolloutPromptText(): string {
   for (const line of lines(join(SESSION_DIR, ROLLOUTS[0]!))) {
-    const item = (JSON.parse(line) as { payload?: { item?: { type?: string; content?: unknown } } })
-      .payload?.item;
+    const item = (
+      JSON.parse(line) as {
+        payload?: { item?: { type?: string; content?: unknown } };
+      }
+    ).payload?.item;
     const first = Array.isArray(item?.content)
       ? (item.content[0] as { text?: unknown })
       : undefined;
@@ -160,12 +163,21 @@ const PLAN: Plan = {
   free: [...hookDeliveries(), ...otelDeliveries()],
 };
 
-/** Seeded random merge: ordered streams keep their internal order, free deliveries go anywhere. */
+/**
+ * Seeded random merge: ordered streams keep their internal order, free deliveries go anywhere.
+ * OTLP deliveries are released only after the subagent's rollout has started (its `agent.start`
+ * is the first line of the last ordered stream): the store links a child's `conversation.id` to its
+ * root through that row, and the opposite order is the residual limit (pinned in `store.test.ts`).
+ */
 function shuffle(plan: Plan, rnd: () => number): Delivery[] {
+  const child = plan.ordered.length - 1;
   const queues: Delivery[][] = [...plan.ordered.map((s) => [...s]), ...plan.free.map((d) => [d])];
+  const childStarted = (): boolean => queues[child]!.length < plan.ordered[child]!.length;
   const out: Delivery[] = [];
   for (;;) {
-    const live = queues.filter((q) => q.length > 0);
+    const live = queues.filter(
+      (q) => q.length > 0 && (q[0]![0]?.source !== "otel" || childStarted()),
+    );
     if (live.length === 0) return out;
     const q = live[Math.floor(rnd() * live.length)]!;
     out.push(q.shift()!);
@@ -288,7 +300,10 @@ describe("three lanes over the B0 Codex session, random delivery order", () => {
     const list = facts(run(shuffle(PLAN, prng(7)), 0));
     const count = (pred: (e: CrowEvent) => boolean): number => list.filter(pred).length;
     for (const kind of ["prompt", "session.start", "session.end"] as const) {
-      expect({ kind, n: count((e) => e.kind === kind) }).toEqual({ kind, n: 1 });
+      expect({ kind, n: count((e) => e.kind === kind) }).toEqual({
+        kind,
+        n: 1,
+      });
     }
     const perCall = new Map<string, number>();
     for (const e of list) {
@@ -301,14 +316,21 @@ describe("three lanes over the B0 Codex session, random delivery order", () => {
     for (const [key, n] of perCall) expect({ key, n }).toEqual({ key, n: 1 });
   });
 
-  test("known limit: a subagent's OTLP records carry its own conversation.id and form their own session", () => {
+  test("a subagent's OTLP records land on the root session once its rollout has started (R13)", () => {
     // Covers: R13
-    // fromOtel is stateless and cannot link `id7` to its parent `id0`; the hook and rollout lanes
-    // attribute the subagent's tool calls to the root session, so the main timeline stays clean.
-    const db = run(shuffle(PLAN, prng(11)), 0);
-    const orphan = facts(db, "codex:id7");
-    expect(orphan.length).toBeGreaterThan(0);
-    expect(orphan.every((e) => e.source === "otel")).toBe(true);
+    // fromOtel is stateless; the store links `conversation.id` id7 to its parent through the `agents`
+    // row the child's rollout created. Precondition: rollout before OTLP (the reverse order is the
+    // residual limit, pinned in store.test.ts); `shuffle` keeps that precondition.
+    for (const seed of SEEDS) {
+      const db = run(shuffle(PLAN, prng(seed)), 0);
+      expect({ seed, orphan: facts(db, "codex:id7") }).toEqual({
+        seed,
+        orphan: [],
+      });
+      const orphanSession = db.query("SELECT 1 FROM sessions WHERE id = 'codex:id7'").get();
+      expect({ seed, orphanSession }).toEqual({ seed, orphanSession: null });
+      expect(facts(db, ROOT).some((e) => e.source === "otel")).toBe(true);
+    }
   });
 
   test("OTel adds no content: no fact of any lane holds a prompt or tool output from OTLP (R24)", () => {

@@ -6,7 +6,16 @@ import { join } from "node:path";
 import type { PartialCrowEvent } from "../adapter";
 import { createUlidFactory } from "../ulid";
 import { migrate } from "./migrations";
-import { getSessionDetail, hasEvent, ingestBatch, listProjects, stats } from "./store";
+import {
+  getSessionDetail,
+  hasEvent,
+  ingestBatch,
+  ingestEvents,
+  listProjects,
+  promoteHeldUsage,
+  OTEL_HOLD_MS,
+  stats,
+} from "./store";
 import type { IngestBatchDeps, PendingEvent } from "./store";
 
 function freshDb(): Database {
@@ -372,7 +381,13 @@ describe("ingestBatch: usage max-tracking and anomaly (R13, round 4)", () => {
         { lineHash: "h1" },
         {
           kind: "assistant.message",
-          usage: { input: 2, output: 1, cacheRead: 0, cacheCreation: 0, model: "claude-sonnet-5" },
+          usage: {
+            input: 2,
+            output: 1,
+            cacheRead: 0,
+            cacheCreation: 0,
+            model: "claude-sonnet-5",
+          },
           usageKey: "u:main:restart",
         },
       ),
@@ -391,7 +406,13 @@ describe("ingestBatch: usage max-tracking and anomaly (R13, round 4)", () => {
         },
       ),
     ];
-    const input = { path: "/f", inode: "1", nextOffset: 10, state: null, events };
+    const input = {
+      path: "/f",
+      inode: "1",
+      nextOffset: 10,
+      state: null,
+      events,
+    };
 
     ingestBatch(db, makeDeps(), input);
     const before = getSessionDetail(db, "claude:s1")?.session.totals.output;
@@ -588,5 +609,121 @@ describe("hasEvent", () => {
 
     expect(hasEvent(db, stored[0]!.id)).toBe(true);
     expect(hasEvent(db, "01UNKNOWNUNKNOWNUNKNOWNUNK")).toBe(false);
+  });
+});
+
+describe("Codex OTLP parent link (R13, D4, D6)", () => {
+  const USAGE = {
+    input: 10,
+    output: 5,
+    cacheRead: 0,
+    cacheCreation: 0,
+    model: "gpt-5",
+  };
+
+  const childStart = (): PendingEvent =>
+    makePending(
+      { engine: "codex", source: "transcript" },
+      {
+        sessionId: "root",
+        agentId: "kid",
+        parentAgentId: null,
+        kind: "agent.start",
+        agent: { type: "worker" },
+        text: undefined,
+      },
+    );
+  const childTranscript = (): PendingEvent =>
+    makePending(
+      { engine: "codex", source: "transcript" },
+      {
+        sessionId: "root",
+        agentId: "kid",
+        kind: "assistant.message",
+        text: "done",
+        usage: USAGE,
+        usageKey: "u:kid:c1",
+        usageCallKey: "c1",
+      },
+    );
+  const childOtel = (): PendingEvent =>
+    makePending(
+      { engine: "codex", source: "otel" },
+      {
+        sessionId: "kid",
+        kind: "api.request",
+        text: undefined,
+        otelUsage: USAGE,
+        usageCallKey: "c1",
+        reported: { metric: "api_request", input: 10, output: 5 },
+      },
+    );
+
+  const sessionIds = (db: Database): string[] =>
+    db
+      .query<{ id: string }, []>("SELECT id FROM sessions ORDER BY id")
+      .all()
+      .map((r) => r.id);
+
+  test("a child's OTLP record after its agent.start lands on the root session and child agent", () => {
+    // Covers: R13
+    const db = freshDb();
+    const deps = makeDeps();
+    ingestEvents(db, deps, [childStart(), childOtel()]);
+    expect(sessionIds(db)).toEqual(["codex:root"]);
+    const row = db
+      .query<{ session_id: string; agent_id: string | null; source: string }, []>(
+        "SELECT session_id, agent_id, source FROM events WHERE source = 'otel'",
+      )
+      .get();
+    expect(row).toEqual({
+      session_id: "codex:root",
+      agent_id: "kid",
+      source: "otel",
+    });
+  });
+
+  test("known limit: OTLP before the child's rollout stays in codex:<child>", () => {
+    // Covers: R13
+    const db = freshDb();
+    ingestEvents(db, makeDeps(), [childOtel(), childStart()]);
+    expect(sessionIds(db)).toEqual(["codex:kid", "codex:root"]);
+  });
+
+  test("the linked child's OTel usage is not counted twice against its transcript (D6)", () => {
+    // Covers: R13
+    for (const order of ["otel-first", "transcript-first"] as const) {
+      const db = freshDb();
+      let now = NOW;
+      const deps = makeDeps({ now: () => now });
+      const batch =
+        order === "otel-first"
+          ? [childStart(), childOtel(), childTranscript()]
+          : [childStart(), childTranscript(), childOtel()];
+      ingestEvents(db, deps, batch);
+      now += OTEL_HOLD_MS + 1;
+      promoteHeldUsage(db, deps);
+      const total = db
+        .query<{ t_input: number; t_output: number }, []>(
+          "SELECT t_input, t_output FROM sessions WHERE id = 'codex:root'",
+        )
+        .get();
+      expect({ order, total }).toEqual({
+        order,
+        total: { t_input: 10, t_output: 5 },
+      });
+      const kid = db
+        .query<{ t_input: number }, []>("SELECT t_input FROM agents WHERE id = 'codex:root/kid'")
+        .get();
+      expect(kid?.t_input).toBe(10);
+      const main = db
+        .query<{ t_input: number }, []>("SELECT t_input FROM agents WHERE id = 'codex:root/main'")
+        .get();
+      expect(main?.t_input ?? 0).toBe(0);
+      const day = db
+        .query<{ t: number | null }, []>("SELECT SUM(t_input) AS t FROM project_daily")
+        .get();
+      expect(day?.t).toBe(10);
+    }
   });
 });

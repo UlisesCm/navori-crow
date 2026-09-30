@@ -844,9 +844,14 @@ function applyStateEffects(
   if (full.kind !== "ingest.error") {
     const now = deps.now();
     const current = db
-      .query<{ status: SessionStatus; last_event_at: number; ended_at: number | null }, [string]>(
-        "SELECT status, last_event_at, ended_at FROM sessions WHERE id = ?",
-      )
+      .query<
+        {
+          status: SessionStatus;
+          last_event_at: number;
+          ended_at: number | null;
+        },
+        [string]
+      >("SELECT status, last_event_at, ended_at FROM sessions WHERE id = ?")
       .get(sessionId);
     if (current !== null) {
       const status = nextStatus(
@@ -981,7 +986,10 @@ function parseFact(row: {
 }): FoundFact {
   const meta: FactMeta =
     row.lmeta === null ? { lanes: [], prov: {} } : (JSON.parse(row.lmeta) as FactMeta);
-  return { state: { fact: JSON.parse(row.body_json) as CrowEvent, meta }, lfp: row.lfp };
+  return {
+    state: { fact: JSON.parse(row.body_json) as CrowEvent, meta },
+    lfp: row.lfp,
+  };
 }
 
 /**
@@ -998,7 +1006,13 @@ function findFact(
 ): FoundFact | null {
   const rows = db
     .query<
-      { id: string; ts: number; body_json: string; lmeta: string | null; lfp: string | null },
+      {
+        id: string;
+        ts: number;
+        body_json: string;
+        lmeta: string | null;
+        lfp: string | null;
+      },
       [string, string]
     >(
       "SELECT id, ts, body_json, lmeta, lfp FROM events WHERE session_id = ? AND lkey = ? ORDER BY id ASC",
@@ -1105,8 +1119,37 @@ function storeErrorEvent(
     kind: "ingest.error",
     ts: event.ts,
     cwd: event.cwd,
-    error: { message, reason, path: pos.path, offset: pos.offset, line: pos.line },
+    error: {
+      message,
+      reason,
+      path: pos.path,
+      offset: pos.offset,
+      line: pos.line,
+    },
   };
+}
+
+/**
+ * Codex OTLP records carry the thread's own `conversation.id` as `sessionId` and no agent id (the
+ * mapper is stateless). When a subagent's rollout already registered that thread (`agent.start` →
+ * `agents.agent_id = <thread>`), re-attributes the record to the root session and the child agent
+ * (R13, D4). No row yet (OTLP before the rollout): unchanged, the record stays in `codex:<thread>`.
+ * Unindexed lookup by `agent_id`: `agents` is small locally; add an index if ingest shows it.
+ */
+function linkCodexThread(
+  db: Database,
+  engine: EngineId,
+  source: PendingEvent["source"],
+  event: PartialCrowEvent,
+): PartialCrowEvent {
+  if (source !== "otel" || engine !== "codex") return event;
+  const root = db
+    .query<{ native_id: string }, [string]>(
+      `SELECT s.native_id FROM agents a JOIN sessions s ON s.id = a.session_id
+       WHERE a.agent_id = ? AND s.engine = 'codex' LIMIT 1`,
+    )
+    .get(event.sessionId);
+  return root === null ? event : { ...event, sessionId: root.native_id, agentId: event.sessionId };
 }
 
 /**
@@ -1122,7 +1165,8 @@ function ingestInTx(
   const stored: CrowEvent[] = [];
 
   for (const pending of events) {
-    const { event, engine, source, lineHash, part, pos } = pending;
+    const { engine, source, lineHash, part, pos } = pending;
+    const event = linkCodexThread(db, engine, source, pending.event);
     const lineKey = `l:${lineHash}:${part}`;
     if (!insertDedupe(db, source, event.sessionId, lineKey, null)) continue; // R16
 
@@ -1178,7 +1222,11 @@ function ingestInTx(
       };
       const incoming = { ...event, seq: pos.offset };
       if (found === null) {
-        plan = { found, next: createFact(identity, incoming, role, source), visibleChanged: false };
+        plan = {
+          found,
+          next: createFact(identity, incoming, role, source),
+          visibleChanged: false,
+        };
       } else {
         const merged = mergeContribution(identity, found.state, incoming, role, source);
         plan = { found, ...merged };
@@ -1280,7 +1328,10 @@ function ingestInTx(
     }
 
     if (plan === null || event.match === undefined) {
-      const eventToStore: PartialCrowEvent = { ...event, usage: usageForStorage };
+      const eventToStore: PartialCrowEvent = {
+        ...event,
+        usage: usageForStorage,
+      };
       stored.push(
         persistEvent(
           db,
