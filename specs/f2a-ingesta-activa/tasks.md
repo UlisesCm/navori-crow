@@ -31,8 +31,8 @@ Lotes de 1–3 tareas; cada tarea declara los `R<n>` que cubre y sus tests (todo
 
 ## B5 · mapas OTel (depende de B3 y B4)
 
-- [ ] **B5.T1** (R18, R24) — `fromOtel` de Claude: eventos de log, las dos métricas de R18 y spans de hook (trazas beta, opt-in), sin atributos de contenido. · tests: `packages/adapters/claude/src/otel.test.ts`.
-- [ ] **B5.T2** (R11, R12, R13, R19, R24) — `fromOtel` de Codex con los 4 eventos de R19, y el e2e de tres carriles sobre la sesión capturada en B0 (G5b) en orden aleatorio. · tests: `packages/adapters/codex/src/otel.test.ts`, `e2e/lanes.test.ts`.
+- [x] **B5.T1** (R18, R24) — `fromOtel` de Claude: eventos de log, las dos métricas de R18 y spans de hook (trazas beta, opt-in), sin atributos de contenido. · tests: `packages/adapters/claude/src/otel.test.ts`. **Hecho (2026-09-30).** Desviaciones aceptadas: un `usage` por punto de métrica (no agrupado, D10); `ownsOtel` reclama todo el scope `com.anthropic.claude_code` (logs sin mapear cuentan como ignorados). Deuda: span `claude_code.hook` probado solo con registro sintético.
+- [x] **B5.T2** (R11, R12, R13, R19, R24) — `fromOtel` de Codex con los 4 eventos de R19, y el e2e de tres carriles sobre la sesión capturada en B0 (G5b) en orden aleatorio. · tests: `packages/adapters/codex/src/otel.test.ts`, `e2e/lanes.test.ts`. **Hecho (2026-09-30).** Desviaciones: `codex.api_request` sin `conversation.id` (fetch de `/models`) se ignora, no es `unattributable` (R17 literal); e2e a nivel store con el prompt del hook igualado al del rollout (marcadores del anonimizador por archivo). Límite fijado por test: los registros OTLP de un subagente caen en `codex:id<hijo>` hasta que el store enlace conversación→padre (seguimiento).
 
 ## B6 · CLI (depende de B2 y B4)
 
