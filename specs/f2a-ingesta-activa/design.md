@@ -1,6 +1,6 @@
 # F2a Ingesta activa (Claude Code y Codex) — Design
 
-> **Estado:** revisión 2. Atiende el challenge `.claude/progress/challenge_f2a.md` (veredicto del orchestrator: CONCERNS), las decisiones del usuario (R12 con clave por llamada, OTLP opt-in, `turn.end` y R33 aceptados, transporte de Claude decidido en B0, `protobufjs` solo como oráculo, trazas beta opt-in) y `requirements.md` con R1–R34.
+> **Estado:** revisión 2. Atiende el challenge `.claude/progress/challenge_f2a.md` (veredicto del orchestrator: CONCERNS), las decisiones del usuario (R12 con clave por llamada, OTLP opt-in, `turn.end` y R33 aceptados, transporte de Claude decidido en B0, `protobufjs` solo como oráculo, trazas beta opt-in) y `requirements.md` con R1–R34. El anexo B8 (2026-09-30) agrega R35–R37 y D19 (identidad entre carriles de Codex); el resto del documento no se reescribe salvo las referencias cruzadas marcadas con D19.
 > **Fecha:** 2026-09-29.
 > **Base:** `origin/main` en `06037d2` (F1 completo). navori-harness en `origin/main` `5ee6c984`: `collect.ts` y `_partials/audit-log.sh` en `ba6322c1`, `parse.ts` en `b8dfe74c`.
 > **Señales:** contrato compartido (`EngineAdapter`, `CrowEvent`, REST/SSE, endpoint de escritura nuevo); esquema v3; concurrencia (una cola para dos carriles, un solo escritor); integridad de datos (reconciliación y conteo de tokens, riesgo PLAN R8); privacidad (riesgo R2); dependencia de desarrollo (`protobufjs`); escritura en la configuración del usuario.
@@ -374,7 +374,7 @@ Cubre R20–R28 y R34.
 
 **Orden de pasos por evento en `ingestEvents` (corrige MF3):**
 
-1. identidad (solo Codex y solo si B3 lo agrega);
+1. identidad (solo Codex y solo si B3 lo agrega). Anexo B8 (D19): `linkCodexThread` resuelve el hilo a su raíz con un lookup indexado; un `agent.start` que viene del spawn de OTel conserva el receptor como agente y toma al emisor como padre;
 2. dedupe `l:`/`s:` por carril (F1);
 3. `ensureSession` (F1 D8);
 4. **`reconcile`: buscar el hecho** por `match`. El **agente canónico** es el del hecho si tiene una contribución del transcript; si no, el del evento entrante si es del transcript; si no, el del hecho;
@@ -451,15 +451,16 @@ Cubre R20–R28 y R34.
   - Claude: `req:<request_id>` en OTel (doc) contra el `requestId` de cada línea `assistant` (100 % ✓). El adaptador de transcript pone `usageCallKey = "req:" + requestId`.
   - Codex: no hay id común conocido (G4), así que el alcance es **la sesión**.
 - **Marcas del transcript.** Al contar uso de una línea con `usageCallKey`, el store inserta `dedupe('transcript', session, 'r:<id>')` y pone `sessions.tu_keyed = 1`. Sin clave (Codex `token_count`, o una línea de Claude sin `requestId`) pone `sessions.tu_unkeyed = 1`.
+- **Anexo B8 (D19).** El libro es por agente: `otel_usage.agent_id` (NULL = principal) y la cobertura del transcript también (`agents.tu_unkeyed`). Si el hilo se vincula después de que llegó su uso, el libro se mueve a la raíz en la transacción que crea la fila del agente.
 - **Llega uso OTel** (`otelUsage` en el evento; el `api.request` se guarda como hecho con los números en `reported`):
   - alcance llamada: si existe la marca `r:<id>` **o** `tu_unkeyed = 1` → no cuenta;
   - alcance sesión: si `tu_keyed` o `tu_unkeyed` → no cuenta;
   - si no, fila en `otel_usage` con `state = 'held'` y `hold_until = now + 30 s`.
-- **Promoción** (`promoteHeldUsage`, en el sweeper cada 30 s). Cada `held` vencido se vuelve a comprobar. Si el transcript sigue sin traer la llamada (o la sesión), pasa a `counted`: `applyUsage` al agente principal (OTel no trae id de agente) con el `ts` del registro, y se publica un evento `kind: "usage"`, `source: "otel"`, con ese `usage` (contado). Los totales de una sesión solo-OTel aparecen en ≤ 60 s.
+- **Promoción** (`promoteHeldUsage`, en el sweeper cada 30 s). Cada `held` vencido se vuelve a comprobar. Si el transcript sigue sin traer la llamada (o la sesión), pasa a `counted`: `applyUsage` al agente del registro (`otel_usage.agent_id`; NULL = principal, D19) con el `ts` del registro, y se publica un evento `kind: "usage"`, `source: "otel"`, con ese `usage` (contado). Los totales de una sesión solo-OTel aparecen en ≤ 60 s.
 - **Llega el transcript de una llamada ya en el libro:**
   - si estaba `held` → pasa a `dropped`, sin eventos;
-  - si estaba `counted` → **reemplazo**: `applyUsage` con los componentes **negativos** en el agente principal y el día del registro, un evento `usage` de corrección con ese `usage` negativo, y `state = 'dropped'`. El transcript cuenta lo suyo como siempre.
-  - Una línea sin clave reemplaza **todas** las filas `counted` de la sesión: es conservador, puede sub-contar y nunca duplica.
+  - si estaba `counted` → **reemplazo**: `applyUsage` con los componentes **negativos** en el agente de la fila (principal si `agent_id` es NULL) y el día del registro, un evento `usage` de corrección con ese `usage` negativo, y `state = 'dropped'`. El transcript cuenta lo suyo como siempre.
+  - Una línea sin clave reemplaza las filas `counted` de la sesión que no son de otro agente: las de su propio agente y las del principal (`agent_id` NULL). Es conservador, puede sub-contar y nunca duplica. Una línea del principal ya no toca las filas de un hilo (D19).
 - **Sin doble conteo en ningún orden:**
   - OTel → transcript dentro de la retención: se descarta;
   - transcript → OTel: la marca la descarta;
@@ -700,6 +701,7 @@ timeout = 2
     - servidor: estado (`listening | disabled | port-in-use | error`) y el sondeo `GET :otlpPort/healthz` (crow, **otro collector** o nadie);
     - "configurado en el motor pero apagado en crow" (R34);
     - último registro recibido y no atribuibles.
+- **`/api/stats` (anexo B8).** `ingest.otelLateLinks` cuenta los vínculos tardíos que movieron uso OTel de un hilo a su raíz (D19). `doctor` no lo muestra: es un contador de diagnóstico para quien lee `/api/stats`.
 - *Reversión:* barata.
 
 ### D16 — UI (R29–R32)
@@ -755,6 +757,46 @@ timeout = 2
 - **Spans beta y registros del transcript son hechos distintos:** no se reconcilian, y el invariante "un `hook` nunca se fusiona" se mantiene (N3).
 - **El snapshot de contrato de F1** gana 8 eventos `hook` (cambio deliberado).
 - *Reversión:* barata.
+
+### D19 — Identidad de hilos Codex entre carriles (R12, R13, R16, R19, R35–R37; anexo B8)
+
+**Problema.** Un subagente de Codex es un hilo con su propio id. Hoy lo vinculan a su raíz solo el hook `SubagentStart` y el `session_meta` del rollout (D4). Sin hooks confiados (carril B mudo) o con el tailer atrasado, los registros OTLP del hijo crean `codex:<hilo>` para siempre y su uso se cuenta dos veces (OTel en `codex:<hilo>` y rollout en la raíz). El libro de D6 tampoco sabe de agentes: atribuye todo a main y su cobertura del transcript es por sesión.
+
+**B1 — vínculo OTel-nativo (B8.T1, sin esquema).**
+- `codex.agent_communication` con `kind = spawn` y `state = send` (evidencia: `fixtures/codex/0.158.0/otlp-logs.jsonl`, registro #22, `sender_thread_id` → `receiver_thread_id`, sin `conversation.id`) se mapea a `agent.start`: `sessionId = sender`, `agentId = receiver`, `ts` del registro, `match { key: "agent-start:<receptor>", mode: "exact" }`. Es la misma clave del hook y del rollout, así que D5 los funde en un solo hecho.
+- Allowlist de exactamente `kind`, `state`, `sender_thread_id` y `receiver_thread_id` (D17: el `content` nunca se lee). Otros `kind`/`state` (incluido `kind = result` y `state = receive`) → sin eventos (`otelIgnored`); un spawn sin los dos ids → `unattributable` (R17).
+- **Resolución en el store** (`linkCodexThread`, D4 paso 1): si el emisor es un hilo vinculado, el `agent.start` va a la raíz con `parentAgentId = emisor` y **conserva** `agentId = receptor` (hoy lo pisaría con el emisor). Si el emisor es la raíz, queda como está.
+- **Nietos en cualquier orden.** El padre de un agente no depende del carril que llegó primero: el hook siempre trae `parentAgentId: null` y `ensureAgent` solo escribía el padre al insertar. La fila `agents` completa `parent_id` con `COALESCE` cuando existe con NULL (mismo criterio que los metadatos de D5) y el hecho fundido conserva el padre que trae el OTel cuando ni el hook ni el rollout lo traen. En la prioridad transcript > hook > otel de § Reconciliación, `null` cuenta como ausente: el `parentAgentId` nulo del hook no pisa al del OTel. Test con el hook primero.
+- Sin estado en el adaptador (`fromOtel` sigue puro) y sin latencia nueva (R31).
+- **Sin preorden.** En la captura 0.158.0 el primer registro **mapeado** del hijo (#26) sigue al spawn (#22); el #20 que lo precede es `conversation_starts`, que no se mapea. Si un cambio futuro mapeara un registro del hijo anterior al spawn, el preorden iría en `routeOtel` (partición estable por petición), no en `fromOtel` ni en el store. Un test de fixture (tripwire) fija el supuesto.
+
+**B2 — libro por agente (B8.T2, migración v4).**
+- `otel_usage.agent_id` (NULL = main). Lo escribe `ledgerOtelUsage` con el agente ya resuelto por `linkCodexThread`; lo usan la promoción, la negación del reemplazo y el evento `usage`.
+- **Cobertura por agente.** Una fila con `agent_id` la cubre `agents.tu_unkeyed` de **ese** agente (o la marca `r:` si es de alcance llamada). Una fila NULL usa las marcas de sesión de D6, sin cambio (Claude solo produce filas NULL). Una línea sin clave del agente A pone `agents(A).tu_unkeyed` (además de la marca de sesión) y reconcilia las filas de A **y** las NULL (regla conservadora de D6 para main); una línea de main ya no toca filas de hilos.
+- **Re-hogar en la misma transacción que `ensureAgent`.** Cuando `ensureAgent` **inserta** la fila de un hilo Codex y existe la sesión `codex:<hilo>` con filas `held`/`counted`, cada fila se mueve a la raíz con el agente de la fila (o el hilo si es NULL):
+  - `INSERT OR IGNORE` en la raíz con la **misma `key`**: `held` sigue `held` con su `hold_until`; `counted` pasa a `counted` si el destino no está cubierto y a `dropped` si lo está;
+  - `counted` en origen: negación exacta en `codex:<hilo>` con su evento; si entró `counted` en la raíz: suma en la raíz y el agente con su evento;
+  - la fila de origen pasa a `dropped` y `ingest_stats.otel_late_links` += 1.
+  Como la `key` viaja, un reintento posterior del mismo lote choca con la PK de la raíz: cierra el reintento que cruza un vínculo tardío.
+- **Idempotencia.** Re-ejecutar el re-hogar (reintento, reingesta) no cambia nada: las filas de origen ya están `dropped` y `INSERT OR IGNORE` no duplica.
+- **Sin transitorio.** Vínculo y movimiento son atómicos: ningún commit observable cuenta la llamada dos veces. Los eventos de corrección viajan en `stored` de la misma transacción y se publican tras el commit (D5).
+- Lookup determinista de `linkCodexThread` con el índice `agents_by_agent_id`: primero la sesión que no es a su vez un hilo, luego `started_at, id`.
+- Los **hechos** del hijo no se mueven (D5: `id` inmutable).
+
+**Migración v4 (aditiva).** Ver § Esquema v4 y § Migration.
+
+**Rollback v4 → v3: solo de emergencia.** Con crow detenido, `PRAGMA user_version = 3;`. Un build v3 escribe `otel_usage` con lista explícita de columnas, así que `agent_id` queda NULL, e ignora `agents.tu_unkeyed`.
+- **Exactos:** los totales de **sesión, proyecto y día**.
+- **Sesgo por agente:** una fila `counted` con `agent_id` de un hilo que después reemplaza un transcript sin clave del principal se niega sobre main: main puede quedar **negativo** y el hilo inflado.
+- **Detección** (suficiente, no necesaria): `SELECT id FROM agents WHERE t_input < 0 OR t_cost_usd < 0;`. Si main tiene otro uso propio mayor que el movido, no sale negativo y el sesgo queda sin detectar, aunque los totales sigan exactos.
+- No se hace seguro: reatribuir exacto exige recalcular costo y peso con `pricing.ts`/`weighted-tokens.ts`, que no se expresa en SQL; una herramienta de downgrade sería maquinaria para un camino raro. Re-aplicar v4 es idempotente y un build v3 contra una DB v4 se rechaza.
+
+**Supuestos y residuales.**
+- **Tripwire de orden de exportación [SIN VERIFICAR].** Se asume que el exportador de Codex entrega las exportaciones de un proceso en orden (spawn antes que los registros mapeados del hijo). La captura es **una** exportación; el orden entre exportaciones no tiene evidencia. El tripwire solo falla si cambia el mapper o la fixture, no si un Codex futuro reordena. Si el supuesto falla, el dinero sigue exacto (B2) y los hechos caen en el residual.
+- **Residuales:** (1) anidado huérfano (el hilo K lanza a Y antes de vincular K): hechos de Y en `codex:K` y, si Y se vincula también a otra raíz, filas duplicadas; el libro sí se mueve (R35 lo excluye para los hechos); (2) hechos del hijo previos al vínculo quedan en `codex:<hilo>` con totales en 0, contados por `otelLateLinks`; (3) el reintento de un lote que cruza un vínculo tardío duplica el **hecho** `usage` (no el dinero); (4) versiones de Codex anteriores a 0.158.0 sin `agent_communication` [SIN VERIFICAR]: B1 no hace nada y vinculan hook y rollout como hoy; (5) una línea sin clave de un subagente puede cubrir el uso OTel de main (sub-cuenta, nunca duplica); (6) huérfanos anteriores a v4 no se corrigen.
+
+- *Descartado:* estacionar los registros del hijo hasta el vínculo (latencia de hasta 90 s, doble conteo transitorio y liberación de huérfanos en 4 de 40 semillas); detector en el sweeper (transitorio de hasta 30 s y scan de `otel_usage` sin índice); mover los hechos (retira ids, contra D5); estado en el adaptador (`fromOtel` es puro); retención en memoria (el tailer no pasa por la cola).
+- *Reversión:* B1 barata (sin esquema); B2 media (v4 y rollback con sesgo por agente).
 
 ---
 
@@ -894,7 +936,8 @@ export interface EngineAttacher {
 
 ```ts
 interface IngestStats { /* F1 */ laneDuplicates: number; unkeyedOtel: number; unkeyedPrompt: number;
-  otelIgnored: number; otelUnattributed: number; hookDropped: number }
+  otelIgnored: number; otelUnattributed: number; hookDropped: number;
+  otelLateLinks: number /* v4, D19 */ }
 interface SessionSummary { /* F1 */ lastPromptAt: number | null; activeAgentAt: number | null }
 interface LaneCounters {
   lastReceivedAt: number | null; lastStoredAt: number | null; received: number;
@@ -944,6 +987,21 @@ CREATE INDEX otel_usage_held ON otel_usage(hold_until) WHERE state = 'held';
 - hook: única por petición (`sha1("hook:" + engine + ":" + receivedAt + ":" + seq)`); B0 confirma que no hay reintentos;
 - otel: `FlatOtelRecord.hash`;
 - `revision`: no pasa por `dedupe`, porque la genera el store.
+
+### Esquema v4 (migración 4, aditiva; anexo B8, D19)
+
+```sql
+-- addColumns (re-aplicable): otel_usage.agent_id TEXT (NULL = main); agents.tu_unkeyed INTEGER NOT NULL DEFAULT 0
+CREATE INDEX IF NOT EXISTS agents_by_agent_id ON agents(agent_id) WHERE agent_id IS NOT NULL;
+UPDATE agents SET tu_unkeyed = 1          -- pre-v4 agent totals can only come from the transcript
+  WHERE agent_id IS NOT NULL AND t_input + t_output + t_cache_read + t_cache_creation > 0
+    AND NOT EXISTS (SELECT 1 FROM otel_usage u WHERE u.session_id = agents.session_id
+                    AND u.agent_id = agents.agent_id AND u.state = 'counted');
+```
+
+- El `NOT EXISTS` hace idempotente re-aplicar v4 tras un rollback: un agente con uso OTel promovido en la era v4 no queda marcado como cubierto.
+- `ingest_stats` gana el contador `otel_late_links` (`IngestStats.otelLateLinks`).
+- El CHECK de `state` de `otel_usage` no cambia (no hay estado nuevo).
 
 ### Configuración
 
@@ -1047,6 +1105,7 @@ Los 10 eventos de R9 con el mismo mapeo (sin `PostToolUseFailure`, `PermissionDe
 | `codex.sse_event` `response.completed` | `usage` con `otelUsage` en alcance de sesión |
 | otros `sse_event` | ignorados |
 | `codex.tool_decision` / `tool_result` | `tool-pre:`/`tool-post:<call_id ⚠>` |
+| `codex.agent_communication` `kind = spawn`, `state = send` | `agent.start` (`sessionId` = emisor, `agentId` = receptor, `agent-start:<receptor>`, D19); otros `kind`/`state` ignorados; sin ids → `unattributable` |
 
 **Allowlist** en todos los casos (D17).
 
@@ -1069,7 +1128,11 @@ Los 10 eventos de R9 con el mismo mapeo (sin `PostToolUseFailure`, `PermissionDe
 | `SessionEnd` y después eventos viejos | No reviven la sesión (`ts <= ended_at`) | D5 |
 | Uso OTel antes, después o sin transcript | Retención, marca o reemplazo con corrección | D6 |
 | Línea de transcript de Claude sin `requestId` | La sesión pasa a `tu_unkeyed` y OTel no cuenta | D6 |
-| Hilo de Codex antes de su rollout | Sesión propia, solo si G2 muestra ids de hilo; B3 lo resuelve por `transcript_path` | D4 |
+| Hilo de Codex antes de su rollout | El spawn de OTel lo vincula a su raíz; si ningún carril lo vinculó todavía, sesión propia `codex:<hilo>` hasta que vincule alguno (residual) | D4, D19 |
+| Exportación del hijo antes que la del spawn, o exportación del spawn perdida (503, crow caído) | Hechos del hijo en `codex:<hilo>`; el uso se mueve a la raíz al crear la fila del agente | D19 (R37), `otelLateLinks` |
+| Anidado huérfano (el hilo K lanza a Y antes de vincular K) | Hechos de Y en `codex:K`; el libro de Y sigue a K y, al vincular K, a la raíz | D19 (R35, excluido), lookup determinista |
+| Reintento OTLP que cruza un vínculo tardío | Dinero: la `key` viaja y choca con la PK de la raíz; el hecho `usage` se duplica | D19 (R37) |
+| Rollback v4 → v3 | Totales de sesión, proyecto y día exactos; por agente, main puede quedar negativo | D19 (consulta de detección) |
 | `SubagentStop` de agente interno | Evento sin fila de agente | D4 (MF3) |
 | SDK ajeno exportando a 4318 (fuga de env o default) | No atribuible con un error cada 10 min | D10 |
 | `OTEL_*` del shell en conflicto | Se omite el carril C y se informa | D14 |
@@ -1084,6 +1147,7 @@ Los 10 eventos de R9 con el mismo mapeo (sin `PostToolUseFailure`, `PermissionDe
 
 - v3 aditiva (§ Contracts), con dos `UPDATE` de datos: marcar `tu_unkeyed` en las sesiones con uso previo, y `last_prompt_at` en `NULL` (el siguiente prompt la llena).
 - **Rollback:** con crow detenido, `PRAGMA user_version = 2;`. F1 ignora las columnas y tablas nuevas. Las filas `revision` que F1 lea aparecerán como kind desconocido en su timeline, que es solo cosmético. Otra salida es borrar la DB y re-ingerir los transcripts (idempotente), perdiendo lo que llegó por hook y OTel.
+- **v4 (anexo B8):** aditiva (§ Esquema v4); rollback de emergencia con sesgo por agente documentado en D19. B8.T1 no tiene migración.
 - **Contratos:** solo adiciones. `EventKind` gana `turn.end` y `revision`. `CrowConfig` gana 3 campos (se actualizan los tests que lo construyen literal). `SessionSummary` gana 2 campos.
 - **Reducers de F1:** pasan a estar guardados por `ts`. Arregla la carrera de backfill de F1 (§ Approach).
 
@@ -1130,6 +1194,9 @@ Ningún test lee homes reales. Todo test lleva `// Covers: R<n>`. OTLP va apagad
 | Carriles de punta a punta | `e2e/lanes.test.ts` (B5): la sesión de 3 carriles de G5b en orden aleatorio | R11–R13 |
 | PII y dependencia | `fixtures/hygiene.test.ts` extendido | Riesgo R2, D9 |
 | Migración | `migrations.test.ts`: v2 con datos → v3, `tu_unkeyed` marcado; con `user_version = 2` de vuelta, las lecturas de F1 funcionan | Migración |
+| Spawn de OTel y privacidad (B8.T1) | `codex/otel.test.ts`: spawn/send → `agent.start` con la clave del receptor; `result`/`receive` → `[]`; sin ids → `unattributable`; un `content` centinela no aparece en la salida (norma: D17); tripwire de orden sobre la fixture 0.158.0 [SIN VERIFICAR: una sola exportación capturada] | R19, R35 |
+| Vínculo del hilo en cualquier orden (B8.T1) | `store/thread-link.test.ts`: **720 permutaciones** de {spawn OTel, start hook, start rollout, tool OTel, usage OTel, usage rollout} con tick final; nietos con el hook primero; `reconcile.test.ts`: 120 órdenes de 5 contribuciones → un start, un stop, una fila; `e2e/lanes.test.ts`: OTLP ordenado con ticks intermedios y peor caso determinista (toda la exportación antes que rollouts y hooks → 0 huérfanos) | R13, R16, R35 |
+| Dinero por agente y vínculo tardío (B8.T2) | `store/thread-link.test.ts`: **720 × 7 posiciones de tick** (5040 corridas), total de `project_daily` ≤ 10 en cada paso y = 10 al final; `usage-lanes.test.ts`: cobertura por agente en las dos direcciones; `store.test.ts`: reintento que cruza el vínculo e idempotencia; `migrations.test.ts`: v3 → v4, índice usado, rollback y re-aplicar; `api.test.ts`: `otelLateLinks` | R12, R36, R37 |
 
 ---
 
@@ -1165,7 +1232,8 @@ Lo que la doc ya contestó (§ Evidencia, marca doc) **no** es un gap, pero se c
 - **F2b:** Gemini, OpenCode, carril D y la aceptación 3 de F2.
 - **OTLP por gRPC**, y el token en el receptor OTLP.
 - **Resolución de hilos de Codex por `transcript_path`**, salvo que G2 la pida (B3).
-- **Uso OTel atribuido a subagentes:** OTel no trae id de agente, así que cuenta en el principal.
+- ~~**Uso OTel atribuido a subagentes**~~ (Codex): resuelto por el anexo B8 (D19). Claude no cambia: sus filas de libro son siempre del principal.
+- **Anidar el `exec` y su comando en la UI, mover los hechos de un hilo huérfano, podar `otel_usage`, mapear `conversation_starts`, corregir huérfanos previos a v4 y un rollback v4 → v3 seguro** (D19).
 - **Spans que no son de hook** y métricas distintas de las dos de R18.
 - **`hooks.json` de Codex**, salvo el aviso.
 - **Badges de carril**, la vista de costo reportado y pintar `usage`.
@@ -1181,10 +1249,13 @@ Lo que la doc ya contestó (§ Evidencia, marca doc) **no** es un gap, pero se c
 1. **[human]** Los cuatro puntos de § Requisitos que necesito cambiar.
 2. **[B0 → decisión]** Transporte de Claude (D14): el criterio está fijado y lo decide el orchestrator con los datos del experimento.
 3. **[assumed]** 30 s de retención y promoción en el sweeper de 30 s: una sesión solo-OTel ve su costo en ≤ 60 s.
-4. **[assumed]** Uso OTel promovido en el agente principal.
+4. **[assumed]** ~~Uso OTel promovido en el agente principal~~: para Codex pasa a ser por agente (D19); para Claude sigue en el principal.
 5. **[assumed]** Tope OTLP de 16/32 MiB en lugar de los 64 MiB que recomienda la spec (un solo hilo; los SDK cortan en 512 registros).
 6. **[assumed]** Cuota del 60 % por motor, 120 sesiones nuevas por minuto y 16 cuerpos en vuelo.
 7. **[assumed]** Ventanas: compactación ±10 min, prompt de Codex ±10 s.
+8. **[assumed]** (B8) Las exportaciones OTLP de un proceso Codex llegan en orden; si no, el dinero sigue exacto y los hechos caen en el residual. [SIN VERIFICAR]
+9. **[assumed]** (B8) Si se sigue el rollout de un hilo, también el de su raíz (mismo árbol `sessions/`); sostiene la regla conservadora sobre main.
+10. **[repo]** (B8) Si `agent_communication` existe en Codex < 0.158.0 (no hay captura OTLP de 0.145/0.155).
 
 ## Batches propuestos
 
@@ -1198,8 +1269,9 @@ Lo que la doc ya contestó (§ Evidencia, marca doc) **no** es un gap, pero se c
 | **B5 · mapas OTel** | **T1:** Claude. **T2:** Codex más `e2e/lanes.test.ts` (G5b) | R12, R18, R19 | B3, B4 |
 | **B6 · CLI** | **T1:** `up`, `fs-safe`, `diff` y script. **T2:** attachers (dos transportes, Codex anidado, confianza) y `attach`/`detach` por unidades. **T3:** `doctor` | R20–R28, R34 | B2, B4 |
 | **B7 · UI** | **T1:** revisiones y etiquetas. **T2:** panel de hooks | R29–R32 | B2 |
+| **B8 · identidad de hilos Codex (anexo)** | **T1:** spawn de OTel → `agent.start` y `linkCodexThread` (D19 B1). **T2:** libro por agente, re-hogar y v4 (D19 B2) | R12, R13, R16, R19, R35–R37 | B5 (T2 depende de T1) |
 
-## Cobertura R1–R34
+## Cobertura R1–R37
 
 | R | Decisión | Test | Batch |
 |---|---|---|---|
@@ -1214,14 +1286,14 @@ Lo que la doc ya contestó (§ Evidencia, marca doc) **no** es un gap, pero se c
 | R9 | ídem | `codex/hook.test.ts` | B0, B3 |
 | R10 | D4 | `hook.test.ts`, `store/agents.test.ts` | B1–B3 |
 | R11 | D5, D7 | `reconcile.test.ts`, `sse-replay.test.ts`, `feed.test.ts` | B1, B2, B7 |
-| R12 | D6 | `usage-lanes.test.ts`, `e2e/lanes.test.ts` | B1, B5 |
-| R13 | D5 | `reconcile.test.ts`, reducers, `e2e/lanes.test.ts` | B1, B3, B7 |
+| R12 | D6, D19 | `usage-lanes.test.ts`, `e2e/lanes.test.ts`, `store/thread-link.test.ts` | B1, B5, B8 |
+| R13 | D5, D19 | `reconcile.test.ts`, reducers, `e2e/lanes.test.ts`, `store/thread-link.test.ts` | B1, B3, B7, B8 |
 | R14 | D8, D9 | `protobuf.test.ts`, `otlp-server.test.ts` | B4 |
 | R15 | D8, D15 | `otlp-server.test.ts`, `doctor.test.ts` | B4, B6 |
-| R16 | D10 | `flatten.test.ts`, `otlp-server.test.ts` | B4 |
+| R16 | D10, D19 | `flatten.test.ts`, `otlp-server.test.ts`, `store.test.ts` | B4, B8 |
 | R17 | D10 | `otlp-server.test.ts` | B4 |
 | R18 | § Mapeo OTel | `claude/otel.test.ts` | B5 |
-| R19 | ídem | `codex/otel.test.ts` | B5 |
+| R19 | ídem, D19 | `codex/otel.test.ts` | B5, B8 |
 | R20 | D14 | `hook-script.test.ts`, experimento de B0 | B0, B6 |
 | R21 | D13 | `attach.test.ts` | B6 |
 | R22 | D13 | `attach.test.ts` | B6 |
@@ -1237,6 +1309,9 @@ Lo que la doc ya contestó (§ Evidencia, marca doc) **no** es un gap, pero se c
 | R32 | D11 | `claude/hook.test.ts`, `feed.test.ts` | B2, B7 |
 | R33 | D18 | `claude/hook-records.test.ts`, `claude/contract.test.ts` | B1 |
 | R34 | D8, D12, D14 | `otlp-server.test.ts`, `config.test.ts`, `attach.test.ts` | B4, B6 |
+| R35 | D19 (B1) | `codex/otel.test.ts`, `store.test.ts`, `reconcile.test.ts`, `store/thread-link.test.ts`, `e2e/lanes.test.ts` | B8.T1 |
+| R36 | D19 (B2), D6 | `usage-lanes.test.ts`, `store/thread-link.test.ts` | B8.T2 |
+| R37 | D19 (B2) | `store/thread-link.test.ts`, `store.test.ts`, `migrations.test.ts`, `api.test.ts` | B8.T2 |
 
 ## Conocimiento durable (propuesta de destino)
 
