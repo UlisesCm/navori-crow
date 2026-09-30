@@ -9,6 +9,7 @@ import type {
   SessionSummary,
   Totals,
 } from "@crow/core/types";
+import { UNRESOLVED_PROJECT_KEY } from "@crow/core/types";
 import { localDay } from "@crow/core/time";
 import { applyMany, applyOne, fromSnapshot, type Cursored } from "./cursor";
 
@@ -21,7 +22,7 @@ export interface ProjectsData {
 
 export type ProjectsState = Cursored<ProjectsData>;
 
-const UNRESOLVED = "unresolved";
+const UNRESOLVED = UNRESOLVED_PROJECT_KEY;
 
 export function emptyTotals(): Totals {
   return {
@@ -201,4 +202,21 @@ export function rollDay(state: ProjectsState, nowMs: number): ProjectsState {
 /** Cards ordered most-recently-active first. */
 export function sortedProjects(data: ProjectsData): ProjectSummary[] {
   return Object.values(data.projects).sort((a, b) => b.lastSeen - a.lastSeen);
+}
+
+/**
+ * Splits the home data into real project cards (recent first) and the reserved `unresolved`
+ * bucket. The bucket is `null` when it has no sessions in the window, so it never renders empty;
+ * its data stays visible (F1 R10/R17, F2a R17) but it is never a split candidate.
+ */
+export function partitionProjects(data: ProjectsData): {
+  cards: ProjectSummary[];
+  unattributed: ProjectSummary | null;
+} {
+  const all = sortedProjects(data);
+  const bucket = data.projects[UNRESOLVED_PROJECT_KEY] ?? null;
+  return {
+    cards: all.filter((p) => p.key !== UNRESOLVED_PROJECT_KEY),
+    unattributed: bucket !== null && bucket.sessions.length > 0 ? bucket : null,
+  };
 }

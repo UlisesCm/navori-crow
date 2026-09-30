@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { CrowEvent, ProjectsResponse } from "@crow/core/types";
-import { applyToProjects, projectsFromSnapshot, rollDay, sortedProjects } from "./projects";
+import { UNRESOLVED_PROJECT_KEY } from "@crow/core/types";
+import {
+  applyToProjects,
+  partitionProjects,
+  projectsFromSnapshot,
+  rollDay,
+  sortedProjects,
+} from "./projects";
 
 const TODAY = new Date(2026, 8, 29, 12, 0, 0).getTime();
 const YESTERDAY = TODAY - 86_400_000;
@@ -167,5 +174,59 @@ describe("BD1: ts-guarded effects with revisions and late facts (home)", () => {
     );
     expect(s.value.projects["aaaaaaaaaaaa"]!.lastError?.message).toBe("boom");
     expect(card(s).totals.input).toBe(0);
+  });
+});
+
+describe("partitionProjects", () => {
+  const orphan = (n: number, over: Partial<CrowEvent> = {}): CrowEvent =>
+    ev(n, { projectKey: UNRESOLVED_PROJECT_KEY, projectPath: "", sessionId: "orphan", ...over });
+
+  // Covers: R30
+  test("separates `unresolved` from real projects and never lists it as a card", () => {
+    let s = projectsFromSnapshot(empty);
+    s = applyToProjects(s, ev(1, { kind: "session.start" }));
+    s = applyToProjects(
+      s,
+      orphan(2, { kind: "ingest.error", error: { reason: "unattributable", message: "boom" } }),
+    );
+    const { cards, unattributed } = partitionProjects(s.value);
+    expect(cards.map((p) => p.key)).toEqual(["aaaaaaaaaaaa"]);
+    expect(unattributed?.key).toBe(UNRESOLVED_PROJECT_KEY);
+    expect(unattributed?.lastError?.message).toBe("boom");
+  });
+
+  // Covers: R30
+  test("excludes `unresolved` from split candidates (cards are the only selectable set)", () => {
+    const s = applyToProjects(projectsFromSnapshot(empty), orphan(1, { kind: "session.start" }));
+    expect(partitionProjects(s.value).cards).toEqual([]);
+  });
+
+  // Covers: R30
+  test("hides the bucket when it has no sessions", () => {
+    const snap: ProjectsResponse = {
+      ...empty,
+      projects: [
+        {
+          key: UNRESOLVED_PROJECT_KEY,
+          path: "",
+          name: "unresolved",
+          engines: [],
+          lastSeen: TODAY,
+          today: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheCreation: 0,
+            cacheCreation1h: 0,
+            weightedTokens: 0,
+            costUsd: 0,
+            unpricedUsages: 0,
+          },
+          lastError: null,
+          sessions: [],
+        },
+      ],
+    };
+    expect(partitionProjects(projectsFromSnapshot(snap).value).unattributed).toBeNull();
   });
 });

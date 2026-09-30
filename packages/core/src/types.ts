@@ -5,6 +5,7 @@
  * never the store/tailer/pricing runtime that pulls in `bun:sqlite` and
  * Node built-ins a browser bundle can't (and shouldn't) ship.
  */
+export { UNRESOLVED_PROJECT_KEY } from "./api-types";
 export type {
   AgentNode,
   ApiErrorResponse,

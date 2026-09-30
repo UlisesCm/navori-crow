@@ -5,7 +5,7 @@ import {
   applyToProjects,
   projectsFromSnapshot,
   rollDay,
-  sortedProjects,
+  partitionProjects,
   type ProjectsState,
 } from "../reduce/projects";
 import { openStream, Restarter, type StreamHandle } from "../stream";
@@ -21,9 +21,12 @@ export class ProjectsStore {
   private readonly restarter = new Restarter(() => void this.start());
   private midnight: ReturnType<typeof setTimeout> | null = null;
 
-  readonly cards: ProjectSummary[] = $derived(
-    this.state === null ? [] : sortedProjects(this.state.value),
+  private readonly parts = $derived(
+    this.state === null ? { cards: [], unattributed: null } : partitionProjects(this.state.value),
   );
+  /** Real projects only; the reserved `unresolved` bucket is `unattributed`. */
+  readonly cards: ProjectSummary[] = $derived(this.parts.cards);
+  readonly unattributed: ProjectSummary | null = $derived(this.parts.unattributed);
   readonly loaded = $derived(this.state !== null);
 
   /** Backfills via REST and subscribes; also the re-snapshot path after `reset` or a dead stream. */

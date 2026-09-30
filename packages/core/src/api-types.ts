@@ -1,5 +1,8 @@
 import type { CrowEvent, EngineId, IngestErrorReason } from "./crow-event";
 
+/** Reserved project key for events that cannot be attributed to a repo (F1 D8, F2a R17). */
+export const UNRESOLVED_PROJECT_KEY = "unresolved";
+
 /**
  * REST/SSE DTOs (design.md § Contracts → REST, § Esquema v1 → `SessionStatus`).
  * Consumed by `apps/server` (B5) and `apps/web` (B6), which import this

@@ -18,6 +18,7 @@ import type {
   EventSource,
   IngestErrorReason,
 } from "../crow-event";
+import { UNRESOLVED_PROJECT_KEY } from "../api-types";
 import { costUsd as computeCostUsd } from "../pricing";
 import {
   createFact,
@@ -44,7 +45,7 @@ const ZERO_TOTALS: Totals = {
 };
 
 /** The reserved project key a session gets before its first `cwd`-bearing event (D8). */
-const UNRESOLVED_PROJECT = "unresolved";
+const UNRESOLVED_PROJECT = UNRESOLVED_PROJECT_KEY;
 
 // ---------------------------------------------------------------------------
 // Row shapes (private to this module; DTOs in `api-types.ts` are the public
