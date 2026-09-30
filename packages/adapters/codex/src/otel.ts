@@ -63,9 +63,44 @@ function usageOf(record: FlatOtelRecord): CrowEventUsage | undefined {
   };
 }
 
+/**
+ * `codex.agent_communication` with `kind = spawn` and `state = send` is the parent announcing a
+ * child thread (D19 B1). Reads only `kind`, `state`, `sender_thread_id` and `receiver_thread_id`
+ * (never `content`, D17); the record has no `conversation.id`. The key is the one the `SubagentStart`
+ * hook and the rollout use, so D5 fuses the three lanes into one fact.
+ */
+function spawnOf(record: FlatOtelRecord): OtelResult {
+  if (strAttr(record, "kind") !== "spawn" || strAttr(record, "state") !== "send") {
+    return { ok: true, events: [] };
+  }
+  const sender = strAttr(record, "sender_thread_id");
+  const receiver = strAttr(record, "receiver_thread_id");
+  if (sender === undefined || receiver === undefined) {
+    return {
+      ok: false,
+      reason: "unattributable",
+      detail: "codex.agent_communication: missing thread ids",
+    };
+  }
+  return {
+    ok: true,
+    events: [
+      {
+        sessionId: sender,
+        agentId: receiver,
+        parentAgentId: null,
+        ts: record.ts,
+        kind: "agent.start",
+        match: { key: `agent-start:${receiver}`, mode: "exact" },
+      },
+    ],
+  };
+}
+
 /** Maps one flattened Codex log record; unknown or unmapped names return `events: []` (`otelIgnored`). */
 export function codexFromOtel(record: FlatOtelRecord): OtelResult {
   const name = record.name;
+  if (name === "codex.agent_communication") return spawnOf(record);
   const isSse = name === "codex.sse_event";
   if (
     name !== "codex.api_request" &&

@@ -407,3 +407,100 @@ describe("Codex exec container versus its nested exec_command", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// B8.T1 (D19 B1): the OTLP export as one ordered stream, no `childStarted()` gate.
+// ---------------------------------------------------------------------------
+
+/** Like {@link shuffle}, but the OTLP deliveries keep their export order and nothing is gated. */
+function shuffleExportOrdered(plan: Plan, rnd: () => number): Delivery[] {
+  const otel = plan.free.filter((d) => d[0]?.source === "otel");
+  const hooks = plan.free.filter((d) => d[0]?.source !== "otel");
+  const queues: Delivery[][] = [
+    ...plan.ordered.map((s) => [...s]),
+    [...otel],
+    ...hooks.map((d) => [d]),
+  ];
+  const out: Delivery[] = [];
+  for (;;) {
+    const live = queues.filter((q) => q.length > 0);
+    if (live.length === 0) return out;
+    out.push(live[Math.floor(rnd() * live.length)]!.shift()!);
+  }
+}
+
+function totalsOrZero(db: Database): Totals {
+  const row = db
+    .query<Totals, [string]>(
+      `SELECT t_input AS input, t_output AS output, t_cache_read AS cacheRead,
+              t_cache_creation AS cacheCreation FROM sessions WHERE id = ?`,
+    )
+    .get(ROOT);
+  return row ?? { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+}
+
+const COMPONENTS = ["input", "output", "cacheRead", "cacheCreation"] as const;
+const OTEL_ONLY = totals(
+  run(
+    PLAN.free.filter((d) => d[0]?.source === "otel"),
+    0,
+  ),
+);
+const CEILING: Totals = {
+  input: Math.max(EXPECTED.input, OTEL_ONLY.input),
+  output: Math.max(EXPECTED.output, OTEL_ONLY.output),
+  cacheRead: Math.max(EXPECTED.cacheRead, OTEL_ONLY.cacheRead),
+  cacheCreation: Math.max(EXPECTED.cacheCreation, OTEL_ONLY.cacheCreation),
+};
+
+describe("B8.T1: the OTel spawn links the child whatever the order (D19 B1)", () => {
+  // Only an upper bound per step (a no-double-count ceiling) plus the final equality: losing the spawn
+  // mapper does not fail this test, the worst-case test below does.
+  test("intermediate ticks stay at or below max(EXPECTED, OTEL_ONLY) and the final state equals EXPECTED, in 40 seeds", () => {
+    // Covers: R11, R12, R13, R35
+    for (const seed of SEEDS) {
+      const rnd = prng(seed);
+      const order = shuffleExportOrdered(PLAN, rnd);
+      const db = freshDb();
+      const clock: Clock = { t: T0 };
+      const deps = clockDeps(clock);
+      order.forEach((delivery, i) => {
+        ingest(db, deps, ...delivery);
+        if (rnd() < 0.15) {
+          clock.t += OTEL_HOLD_MS + 1;
+          promoteHeldUsage(db, deps);
+        }
+        const now = totalsOrZero(db);
+        for (const c of COMPONENTS) {
+          expect({ seed, step: i, c, ok: now[c] <= CEILING[c] }).toEqual({
+            seed,
+            step: i,
+            c,
+            ok: true,
+          });
+        }
+      });
+      clock.t += 10 * OTEL_HOLD_MS;
+      promoteHeldUsage(db, deps);
+      expect({ seed, ...totals(db) }).toEqual({ seed, ...EXPECTED });
+    }
+  });
+
+  test("worst case: the whole export first, then rollouts and hooks -> no orphans, child tools fused", () => {
+    // Covers: R11, R12, R13, R35
+    const otel = PLAN.free.filter((d) => d[0]?.source === "otel");
+    const hooks = PLAN.free.filter((d) => d[0]?.source !== "otel");
+    const db = run([...otel, ...PLAN.ordered.flat(), ...hooks], 0);
+    expect(facts(db, "codex:id7")).toEqual([]);
+    expect(db.query("SELECT 1 FROM sessions WHERE id = 'codex:id7'").get()).toBeNull();
+    const srcs = (e: CrowEvent): string => [...(e.sources ?? [e.source])].sort().join("+");
+    const childTools = facts(db, ROOT).filter(
+      (e) => e.agentId === "id7" && e.kind === "tool.post" && e.tool?.callId !== undefined,
+    );
+    expect(childTools.length).toBeGreaterThan(0);
+    const kinds = new Set(childTools.map(srcs));
+    expect(kinds.has("hook+otel")).toBe(true);
+    expect(kinds.has("otel+transcript")).toBe(true);
+    expect(totals(db)).toEqual(EXPECTED);
+  });
+});

@@ -75,6 +75,8 @@ export interface IngestStats {
   usageAnomalies: number;
   /** Contributions dropped because the same lane had already contributed to that fact (D5). */
   laneDuplicates: number;
+  /** Late Codex thread links that moved OTel usage from `codex:<thread>` to the root session (D19). */
+  otelLateLinks: number;
   errorsByReason: Partial<Record<IngestErrorReason, number>>;
 }
 

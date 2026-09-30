@@ -100,7 +100,7 @@ function seedFixture(dbDeps: {
 
 describe("REST contracts (R25-R27, R33)", () => {
   test("full lifecycle: /api/projects, /api/sessions, /api/sessions/:id, /api/sessions/:id/events, /api/events, /api/stats", async () => {
-    // Covers: R25, R26, R27, R33
+    // Covers: R25, R26, R27, R33, R37
     await withTempDir(async (dir) => {
       const now = Date.now();
       const handle = await startApp(testConfig(dir), { now: () => now });
@@ -175,6 +175,7 @@ describe("REST contracts (R25-R27, R33)", () => {
             semanticDuplicates: 0,
             usageAnomalies: 0,
             laneDuplicates: 0,
+            otelLateLinks: 0,
             errorsByReason: {},
           },
           lanes: {

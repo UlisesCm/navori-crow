@@ -775,3 +775,138 @@ describe("nearest matching: the fingerprint is required when both sides carry on
     }
   });
 });
+
+describe("reconcile: a Codex child's start and stop across lanes (R13, R35)", () => {
+  const startKey = { key: "agent-start:kid", mode: "exact" } as const;
+  const stopKey = { key: "agent-stop:kid", mode: "exact" } as const;
+  const codex = (p: PendingEvent): PendingEvent => ({ ...p, engine: "codex" });
+  const lanes = (): Record<string, PendingEvent> => ({
+    startTranscript: codex(
+      pending("transcript", {
+        sessionId: "root",
+        agentId: "kid",
+        kind: "agent.start",
+        ts: T0 + 10,
+        agent: { type: "worker" },
+        match: startKey,
+      }),
+    ),
+    startHook: codex(
+      pending("hook", {
+        sessionId: "root",
+        agentId: "kid",
+        kind: "agent.start",
+        ts: T0 + 11,
+        agent: { type: "worker" },
+        match: startKey,
+      }),
+    ),
+    startOtel: codex(
+      pending("otel", {
+        sessionId: "root",
+        agentId: "kid",
+        kind: "agent.start",
+        ts: T0 + 9,
+        match: startKey,
+      }),
+    ),
+    // The Codex rollout emits no `agent.stop` today: a synthetic second stop lane.
+    stopTranscript: codex(
+      pending("transcript", {
+        sessionId: "root",
+        agentId: "kid",
+        kind: "agent.stop",
+        ts: T0 + 50,
+        match: stopKey,
+      }),
+    ),
+    stopHook: codex(
+      pending("hook", {
+        sessionId: "root",
+        agentId: "kid",
+        kind: "agent.stop",
+        ts: T0 + 51,
+        match: stopKey,
+      }),
+    ),
+  });
+
+  test("all 120 orders of 3 starts and 2 stops give one start fact, one stop fact and one agent row", () => {
+    // Covers: R13, R35
+    const names = Object.keys(lanes());
+    const orders = permutations(names);
+    expect(orders).toHaveLength(120);
+    const template = freshDb().serialize();
+    for (const order of orders) {
+      const db = Database.deserialize(template);
+      const deps = makeDeps();
+      const all = lanes();
+      for (const name of order) ingest(db, deps, all[name]!);
+      const facts = factRows(db, "codex:root");
+      const label = order.join(",");
+      expect({ label, starts: facts.filter((f) => f.kind === "agent.start").length }).toEqual({
+        label,
+        starts: 1,
+      });
+      expect({ label, stops: facts.filter((f) => f.kind === "agent.stop").length }).toEqual({
+        label,
+        stops: 1,
+      });
+      const rows = db
+        .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM agents WHERE agent_id = 'kid'")
+        .get();
+      expect({ label, rows: rows?.n }).toEqual({ label, rows: 1 });
+    }
+  });
+
+  test("a hook's null parent never overrides the parent an OTel spawn carried, in either order (D19)", () => {
+    // Covers: R13, R35
+    for (const order of permutations(["hook", "otel"] as const)) {
+      const db = freshDb();
+      const deps = makeDeps();
+      const parented = (source: "hook" | "otel"): PendingEvent =>
+        codex(
+          pending(source, {
+            sessionId: "root",
+            agentId: "Y",
+            parentAgentId: source === "otel" ? "K" : null,
+            kind: "agent.start",
+            ts: T0 + 1,
+            match: { key: "agent-start:Y", mode: "exact" },
+          }),
+        );
+      for (const source of order) ingest(db, deps, parented(source));
+      const facts = factRows(db, "codex:root");
+      expect(facts).toHaveLength(1);
+      expect(facts[0]!.parentAgentId).toBe("K");
+    }
+  });
+});
+
+describe("reconcile: a null parentAgentId means absent, also for Claude (D19)", () => {
+  const start = (source: "transcript" | "hook", parentAgentId: string | null): PendingEvent =>
+    pending(source, {
+      sessionId: "s1",
+      agentId: "kid",
+      parentAgentId,
+      kind: "agent.start",
+      ts: T0 + 1,
+      match: { key: "agent-start:kid", mode: "exact" },
+    });
+
+  test("a transcript's null parent never overrides a hook's parent, in either order", () => {
+    // Covers: R13
+    for (const order of permutations(["transcript", "hook"] as const)) {
+      const db = freshDb();
+      const deps = makeDeps();
+      for (const source of order)
+        ingest(db, deps, start(source, source === "hook" ? "main-agent" : null));
+      const facts = factRows(db).filter((f) => f.kind === "agent.start");
+      expect({ order: order.join(","), n: facts.length }).toEqual({ order: order.join(","), n: 1 });
+      expect({ order: order.join(","), parent: facts[0]!.parentAgentId }).toEqual({
+        order: order.join(","),
+        parent: "main-agent",
+      });
+    }
+  });
+});

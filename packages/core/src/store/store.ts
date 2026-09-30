@@ -286,12 +286,16 @@ function ensureAgent(
 ): string {
   const id = agentRowId(sessionId, agentId);
   const existing = db.query<{ id: string }, [string]>("SELECT id FROM agents WHERE id = ?").get(id);
+  const parentId = parentAgentId !== null ? agentRowId(sessionId, parentAgentId) : null;
   if (existing === null) {
-    const parentId = parentAgentId !== null ? agentRowId(sessionId, parentAgentId) : null;
     db.query(
       `INSERT INTO agents (id, session_id, agent_id, parent_id, started_at, last_event_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(id, sessionId, agentId, parentId, ts, ts);
+  } else if (parentId !== null) {
+    // D19 B1: any lane may learn the parent first (the hook always carries null), so an existing
+    // row with NULL is completed whichever order the lanes arrive in.
+    db.query("UPDATE agents SET parent_id = COALESCE(parent_id, ?) WHERE id = ?").run(parentId, id);
   }
   return id;
 }
@@ -537,10 +541,13 @@ interface LedgerSqlRow {
   u_cache_read: number;
   u_cache_creation: number;
   u_cache_creation_1h: number;
+  /** D19: the Codex thread's agent; `null` = the session's main agent (and every Claude row). */
+  agent_id: string | null;
+  hold_until: number;
 }
 
 const LEDGER_COLUMNS =
-  "key, scope, ts, model, u_input, u_output, u_cache_read, u_cache_creation, u_cache_creation_1h";
+  "key, scope, ts, model, u_input, u_output, u_cache_read, u_cache_creation, u_cache_creation_1h, agent_id, hold_until";
 
 /** The usage a ledger row holds, in the shape `applyUsage` takes. */
 function ledgerUsage(r: LedgerSqlRow): CrowEventUsage {
@@ -576,6 +583,30 @@ function hasCallMark(db: Database, nativeSessionId: string, key: string): boolea
   );
 }
 
+/**
+ * D19: whether the transcript already covers one ledger row. A row of a specific agent is covered by
+ * that agent's unkeyed transcript (`agents.tu_unkeyed`) or, for a call scope, by the `r:` mark; a
+ * main-agent row (`agentId` null, every Claude row) keeps the session marks of D6.
+ */
+function ledgerCovered(
+  db: Database,
+  sessionRowId: string,
+  nativeSessionId: string,
+  agentId: string | null,
+  scope: "call" | "session",
+  key: string,
+  marks: { tu_keyed: number; tu_unkeyed: number },
+): boolean {
+  if (scope === "call" && hasCallMark(db, nativeSessionId, key)) return true;
+  if (agentId === null) {
+    return marks.tu_unkeyed === 1 || (scope === "session" && marks.tu_keyed === 1);
+  }
+  const agent = db
+    .query<{ tu_unkeyed: number }, [string]>("SELECT tu_unkeyed FROM agents WHERE id = ?")
+    .get(agentRowId(sessionRowId, agentId));
+  return agent !== null && agent.tu_unkeyed === 1;
+}
+
 /** The session facts the ledger needs to stamp a `usage` event. */
 interface LedgerSession {
   id: string;
@@ -592,6 +623,7 @@ function ledgerUsageEvent(
   ts: number,
   usage: CrowEventUsage,
   seq: number,
+  agentId: string | null = null,
 ): CrowEvent {
   const event: CrowEvent = {
     id: deps.nextId(),
@@ -600,7 +632,7 @@ function ledgerUsageEvent(
     projectKey: session.projectKey,
     projectPath: projectPathFor(db, session.projectKey),
     sessionId: session.nativeId,
-    agentId: null,
+    agentId,
     parentAgentId: null,
     kind: "usage",
     ts,
@@ -635,15 +667,14 @@ function ledgerOtelUsage(
       "SELECT tu_keyed, tu_unkeyed FROM sessions WHERE id = ?",
     )
     .get(sessionRowId);
-  if (marks === null || marks.tu_unkeyed === 1) return;
-  if (scope === "session" && marks.tu_keyed === 1) return;
-  if (scope === "call" && hasCallMark(db, event.sessionId, key)) return;
+  if (marks === null) return;
+  if (ledgerCovered(db, sessionRowId, event.sessionId, event.agentId, scope, key, marks)) return;
   const u = usageComponents(otelUsage);
   db.query(
     `INSERT OR IGNORE INTO otel_usage
        (session_id, key, scope, state, hold_until, ts, model,
-        u_input, u_output, u_cache_read, u_cache_creation, u_cache_creation_1h)
-     VALUES (?, ?, ?, 'held', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        u_input, u_output, u_cache_read, u_cache_creation, u_cache_creation_1h, agent_id)
+     VALUES (?, ?, ?, 'held', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     sessionRowId,
     key,
@@ -656,6 +687,7 @@ function ledgerOtelUsage(
     u.cacheRead,
     u.cacheCreation,
     u.cacheCreation1h,
+    event.agentId,
   );
 }
 
@@ -691,12 +723,19 @@ function reconcileTranscriptUsage(
       .all(sessionRowId, event.usageCallKey);
   } else {
     db.query("UPDATE sessions SET tu_unkeyed = 1 WHERE id = ?").run(sessionRowId);
+    if (event.agentId !== null) {
+      db.query("UPDATE agents SET tu_unkeyed = 1 WHERE id = ?").run(
+        agentRowId(sessionRowId, event.agentId),
+      );
+    }
+    // D19: the line's own agent and the main agent (conservative, R36); never another agent's rows.
     rows = db
-      .query<LedgerSqlRow & { state: string }, [string]>(
+      .query<LedgerSqlRow & { state: string }, [string, string | null]>(
         `SELECT ${LEDGER_COLUMNS}, state FROM otel_usage
-         WHERE session_id = ? AND state IN ('held','counted') ORDER BY ts ASC, key ASC`,
+         WHERE session_id = ? AND state IN ('held','counted') AND (agent_id IS NULL OR agent_id = ?)
+         ORDER BY ts ASC, key ASC`,
       )
-      .all(sessionRowId);
+      .all(sessionRowId, event.agentId);
   }
 
   const corrections: CrowEvent[] = [];
@@ -708,17 +747,17 @@ function reconcileTranscriptUsage(
   };
   for (const row of rows) {
     if (row.state === "counted") {
-      const mainKey = ensureAgent(db, sessionRowId, null, null, row.ts);
+      const rowAgentKey = ensureAgent(db, sessionRowId, row.agent_id, null, row.ts);
       const negative = applyUsage(
         db,
         sessionRowId,
-        mainKey,
+        rowAgentKey,
         projectKey,
         ledgerUsage(row),
         row.ts,
         -1,
       );
-      corrections.push(ledgerUsageEvent(db, deps, session, row.ts, negative, seq));
+      corrections.push(ledgerUsageEvent(db, deps, session, row.ts, negative, seq, row.agent_id));
     }
     setLedgerState(db, sessionRowId, row.key, "dropped");
   }
@@ -729,7 +768,7 @@ function reconcileTranscriptUsage(
  * D6 promotion (sweeper tick, every 30 s): re-checks each `held` row whose `hold_until` has passed
  * against `deps.now()` (the injected clock). If the transcript now covers the call (or, for a
  * session-scope row, the session) the row is `dropped` silently; otherwise it is `counted`: applied
- * to the session's MAIN agent (OTel carries no agent id) with the record's `ts`, priced with crow's
+ * to the row's agent (`agent_id`; NULL = main, D19) with the record's `ts`, priced with crow's
  * table (not OTel's `cost_usd`) and published as a `usage` fact with `source: "otel"`. Returns the
  * facts to publish after the transaction, in commit order.
  */
@@ -756,17 +795,22 @@ export function promoteHeldUsage(db: Database, deps: IngestBatchDeps): CrowEvent
           [string]
         >("SELECT engine, native_id, project_key, tu_keyed, tu_unkeyed FROM sessions WHERE id = ?")
         .get(sessionRowId);
-      const covered =
+      if (
         s === null ||
-        s.tu_unkeyed === 1 ||
-        (row.scope === "session" && s.tu_keyed === 1) ||
-        (row.scope === "call" && hasCallMark(db, s.native_id, row.key));
-      if (s === null || covered) {
+        ledgerCovered(db, sessionRowId, s.native_id, row.agent_id, row.scope, row.key, s)
+      ) {
         setLedgerState(db, sessionRowId, row.key, "dropped");
         continue;
       }
-      const mainKey = ensureAgent(db, sessionRowId, null, null, row.ts);
-      const usage = applyUsage(db, sessionRowId, mainKey, s.project_key, ledgerUsage(row), row.ts);
+      const rowAgentKey = ensureAgent(db, sessionRowId, row.agent_id, null, row.ts);
+      const usage = applyUsage(
+        db,
+        sessionRowId,
+        rowAgentKey,
+        s.project_key,
+        ledgerUsage(row),
+        row.ts,
+      );
       setLedgerState(db, sessionRowId, row.key, "counted");
       const session: LedgerSession = {
         id: sessionRowId,
@@ -774,7 +818,7 @@ export function promoteHeldUsage(db: Database, deps: IngestBatchDeps): CrowEvent
         nativeId: s.native_id,
         projectKey: s.project_key,
       };
-      promoted.push(ledgerUsageEvent(db, deps, session, row.ts, usage, 0));
+      promoted.push(ledgerUsageEvent(db, deps, session, row.ts, usage, 0, row.agent_id));
     }
   }).immediate();
   return promoted;
@@ -1134,7 +1178,8 @@ function storeErrorEvent(
  * mapper is stateless). When a subagent's rollout already registered that thread (`agent.start` →
  * `agents.agent_id = <thread>`), re-attributes the record to the root session and the child agent
  * (R13, D4). No row yet (OTLP before the rollout): unchanged, the record stays in `codex:<thread>`.
- * Unindexed lookup by `agent_id`: `agents` is small locally; add an index if ingest shows it.
+ * The lookup uses `agents_by_agent_id` (v4) and is deterministic when a thread has rows in two
+ * sessions (orphan nested spawn, D19): the session that is not itself a thread first, then the oldest row.
  */
 function linkCodexThread(
   db: Database,
@@ -1146,10 +1191,128 @@ function linkCodexThread(
   const root = db
     .query<{ native_id: string }, [string]>(
       `SELECT s.native_id FROM agents a JOIN sessions s ON s.id = a.session_id
-       WHERE a.agent_id = ? AND s.engine = 'codex' LIMIT 1`,
+       WHERE a.agent_id = ? AND s.engine = 'codex'
+       ORDER BY EXISTS (SELECT 1 FROM agents t WHERE t.agent_id = s.native_id), a.started_at, a.id
+       LIMIT 1`,
     )
     .get(event.sessionId);
-  return root === null ? event : { ...event, sessionId: root.native_id, agentId: event.sessionId };
+  if (root === null) return event;
+  // A spawn from OTel (`agent.start` with the receiver as `agentId`, D19 B1) keeps the receiver and
+  // takes the linked sender thread as its parent; any other record becomes the sender's own record.
+  if (event.kind === "agent.start" && event.agentId !== null) {
+    return { ...event, sessionId: root.native_id, parentAgentId: event.sessionId };
+  }
+  return { ...event, sessionId: root.native_id, agentId: event.sessionId };
+}
+
+/**
+ * D19 B2: a late link. The thread `threadId` just got its `agents` row under the root session, so
+ * whatever OTel usage its own session `codex:<thread>` holds (`held` or `counted`) moves to the
+ * root, attributed to the row's agent (or the thread when the row has none), inside the same
+ * transaction: no committed state counts a call twice, and no sweeper is needed.
+ *
+ * Each source row is re-inserted with the SAME `key` (`INSERT OR IGNORE`), so a later retry of the
+ * batch hits the root's primary key. `counted` rows are negated exactly in the thread's session and
+ * re-applied in the root unless the root already covers them; the source row ends `dropped`, which
+ * also makes re-running this a no-op. Returns the correction facts to publish after the commit.
+ */
+function rehomeThreadLedger(
+  db: Database,
+  deps: IngestBatchDeps,
+  engine: EngineId,
+  root: LedgerSession,
+  threadId: string,
+  seq: number,
+): CrowEvent[] {
+  const orphanId = compositeSessionId(engine, threadId);
+  if (orphanId === root.id) return [];
+  const orphan = db
+    .query<{ native_id: string; project_key: string }, [string]>(
+      "SELECT native_id, project_key FROM sessions WHERE id = ?",
+    )
+    .get(orphanId);
+  if (orphan === null) return [];
+  const rows = db
+    .query<LedgerSqlRow & { state: string }, [string]>(
+      `SELECT ${LEDGER_COLUMNS}, state FROM otel_usage
+       WHERE session_id = ? AND state IN ('held','counted') ORDER BY ts ASC, key ASC`,
+    )
+    .all(orphanId);
+  if (rows.length === 0) return [];
+
+  const marks = db
+    .query<{ tu_keyed: number; tu_unkeyed: number }, [string]>(
+      "SELECT tu_keyed, tu_unkeyed FROM sessions WHERE id = ?",
+    )
+    .get(root.id) ?? { tu_keyed: 0, tu_unkeyed: 0 };
+  const orphanSession: LedgerSession = {
+    id: orphanId,
+    engine,
+    nativeId: orphan.native_id,
+    projectKey: orphan.project_key,
+  };
+  const out: CrowEvent[] = [];
+  for (const row of rows) {
+    const target = row.agent_id ?? threadId;
+    const targetKey = ensureAgent(
+      db,
+      root.id,
+      target,
+      target === threadId ? null : threadId,
+      row.ts,
+    );
+    const covered = ledgerCovered(db, root.id, root.nativeId, target, row.scope, row.key, marks);
+    const state = row.state === "counted" && covered ? "dropped" : row.state;
+    const inserted =
+      db
+        .query(
+          `INSERT OR IGNORE INTO otel_usage
+             (session_id, key, scope, state, hold_until, ts, model,
+              u_input, u_output, u_cache_read, u_cache_creation, u_cache_creation_1h, agent_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          root.id,
+          row.key,
+          row.scope,
+          state,
+          row.hold_until,
+          row.ts,
+          row.model,
+          row.u_input,
+          row.u_output,
+          row.u_cache_read,
+          row.u_cache_creation,
+          row.u_cache_creation_1h,
+          target,
+        ).changes > 0;
+    if (row.state === "counted") {
+      const negative = applyUsage(
+        db,
+        orphanId,
+        agentRowId(orphanId, row.agent_id),
+        orphan.project_key,
+        ledgerUsage(row),
+        row.ts,
+        -1,
+      );
+      out.push(ledgerUsageEvent(db, deps, orphanSession, row.ts, negative, seq, row.agent_id));
+      if (inserted && state === "counted") {
+        const positive = applyUsage(
+          db,
+          root.id,
+          targetKey,
+          root.projectKey,
+          ledgerUsage(row),
+          row.ts,
+        );
+        out.push(ledgerUsageEvent(db, deps, root, row.ts, positive, seq, target));
+      }
+    }
+    setLedgerState(db, orphanId, row.key, "dropped");
+  }
+  incrementStat(db, "otel_late_links");
+  return out;
 }
 
 /**
@@ -1241,10 +1404,21 @@ function ingestInTx(
       subject.kind === "agent.stop" &&
       subject.agentId !== null &&
       !agentKnown(db, sessionId, subject.agentId);
+    // D19 B2: the moment a Codex thread gets its row is the moment its earlier OTel usage moves.
+    const threadLinked =
+      !phantom &&
+      engine === "codex" &&
+      subject.agentId !== null &&
+      db.query("SELECT 1 FROM agents WHERE id = ?").get(agentRowId(sessionId, subject.agentId)) ===
+        null;
     const agentRowKey = phantom
       ? agentRowId(sessionId, subject.agentId)
       : ensureAgent(db, sessionId, subject.agentId, subject.parentAgentId, event.ts);
     applyAgentEffects(db, sessionId, agentRowKey, plan?.next.fact.ts ?? event.ts, subject);
+    if (threadLinked && subject.agentId !== null) {
+      const root: LedgerSession = { id: sessionId, engine, nativeId: event.sessionId, projectKey };
+      stored.push(...rehomeThreadLedger(db, deps, engine, root, subject.agentId, pos.offset));
+    }
 
     let usageForStorage: CrowEventUsage | undefined = event.usage;
     if (event.usage !== undefined) {
@@ -1493,12 +1667,14 @@ export function stats(db: Database): IngestStats {
     semanticDuplicates: 0,
     usageAnomalies: 0,
     laneDuplicates: 0,
+    otelLateLinks: 0,
     errorsByReason: {},
   };
   for (const row of rows) {
     if (row.name === "semantic_duplicates") result.semanticDuplicates = row.value;
     else if (row.name === "usage_anomalies") result.usageAnomalies = row.value;
     else if (row.name === "lane_duplicates") result.laneDuplicates = row.value;
+    else if (row.name === "otel_late_links") result.otelLateLinks = row.value;
     else if (row.name.startsWith("errors:")) {
       const reason = row.name.slice("errors:".length) as IngestErrorReason;
       result.errorsByReason[reason] = row.value;
