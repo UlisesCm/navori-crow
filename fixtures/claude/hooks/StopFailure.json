@@ -1,0 +1,12 @@
+{
+  "session_id": "id7",
+  "transcript_path": "/tmp/crow-fixture/claude-home/projects/-tmp-crow-fixture-b0-toy/id7.jsonl",
+  "cwd": "/tmp/crow-fixture/b0-toy",
+  "prompt_id": "id8",
+  "effort": {
+    "level": "high"
+  },
+  "hook_event_name": "StopFailure",
+  "error": "model_not_found",
+  "last_assistant_message": "«str:14»"
+}

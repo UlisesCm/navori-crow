@@ -1,0 +1,23 @@
+{
+  "session_id": "id0",
+  "transcript_path": "/tmp/crow-fixture/claude-home/projects/-tmp-crow-fixture-b0-toy/id0.jsonl",
+  "cwd": "/tmp/crow-fixture/b0-toy",
+  "prompt_id": "id1",
+  "permission_mode": "acceptEdits",
+  "agent_id": "id4",
+  "agent_type": "general-purpose",
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "/tmp/crow-fixture/claude-home/projects/-tmp-crow-fixture-b0-toy/id0/subagents/agent-id4.jsonl",
+  "last_assistant_message": "«str:11»",
+  "background_tasks": [
+    {
+      "id": "id4",
+      "type": "subagent",
+      "status": "running",
+      "description": "«str:12»",
+      "agent_type": "general-purpose"
+    }
+  ],
+  "session_crons": []
+}

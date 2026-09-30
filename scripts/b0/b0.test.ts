@@ -9,7 +9,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startReceiver, type ReceiverMode, type RunningReceiver } from "../capture-receiver";
 import { CLAUDE_EVENTS, CODEX_EVENTS, claudeSettings, codexToml } from "./gen-config";
-import { CLAUDE_PAIRS, checkIds, summarizeCaptures, toolLatency } from "./summarize-captures";
+import {
+  CLAUDE_PAIRS,
+  CODEX_PAIRS,
+  checkIds,
+  summarizeCaptures,
+  toolLatency,
+} from "./summarize-captures";
 
 describe("gen-config", () => {
   const base = { hookPort: 7790, otlpPort: 4319, shim: "/b0/hook-shim.sh", traces: false } as const;
@@ -314,5 +320,62 @@ describe("summarize-captures", () => {
     );
     expect(report).toContain("prompt_id <-> promptId [hook]: captured=1 transcript=1 matched=1");
     expect(report).toContain("request_id <-> requestId [hook]: captured=0 transcript=1 matched=0");
+  });
+
+  test("G5a Codex: a Bash hook's exec-<id> matches the rollout's item_completed item id, a collaboration call_id its call_id", () => {
+    const dir = mkdtempSync(join(tmpdir(), "b0-codex-"));
+    const capture = (n: number, path: string, body: unknown): void => {
+      const stem = String(n).padStart(6, "0");
+      writeFileSync(join(dir, `${stem}.body`), JSON.stringify(body));
+      writeFileSync(
+        join(dir, `${stem}.json`),
+        JSON.stringify({
+          n,
+          method: "POST",
+          path,
+          headers: { "content-type": "application/json" },
+          bodyFile: `${stem}.body`,
+          decodedFile: null,
+        }),
+      );
+    };
+    capture(1, "/hook/codex", { hook_event_name: "PreToolUse", tool_use_id: "exec-AAA" });
+    capture(2, "/hook/codex", { hook_event_name: "PreToolUse", tool_use_id: "call_BBB" });
+    capture(3, "/hook/codex", { hook_event_name: "PreToolUse", tool_use_id: "exec-NOPE" });
+    capture(4, "/v1/logs", {
+      resourceLogs: [
+        {
+          scopeLogs: [
+            {
+              logRecords: [
+                { attributes: [{ key: "call_id", value: { stringValue: "call_CCC" } }] },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const rollout = join(dir, "rollout.jsonl");
+    writeFileSync(
+      rollout,
+      [
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "item_completed", item: { id: "exec-AAA", type: "CommandExecution" } },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: { type: "function_call", call_id: "call_BBB" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: { type: "function_call", call_id: "call_CCC" },
+        }),
+      ].join("\n"),
+    );
+    const report = checkIds(dir, [rollout], CODEX_PAIRS);
+    expect(report).not.toContain("exec-AAA");
+    expect(report).toContain("call_id|item.id [hook]: captured=3 transcript=3 matched=2");
+    expect(report).toContain("call_id|item.id [otel]: captured=1 transcript=3 matched=1");
   });
 });

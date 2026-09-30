@@ -1,0 +1,16 @@
+{
+  "session_id": "id0",
+  "transcript_path": "/tmp/crow-fixture/claude-home/projects/-tmp-crow-fixture-b0-toy/id0.jsonl",
+  "cwd": "/tmp/crow-fixture/b0-toy",
+  "prompt_id": "id1",
+  "permission_mode": "acceptEdits",
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "Read",
+  "tool_input": {
+    "file_path": "«str:7»"
+  },
+  "tool_use_id": "id3",
+  "error": "«str:8»",
+  "is_interrupt": false,
+  "duration_ms": 4
+}

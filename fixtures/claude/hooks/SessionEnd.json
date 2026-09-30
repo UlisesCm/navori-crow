@@ -1,0 +1,8 @@
+{
+  "session_id": "id0",
+  "transcript_path": "/tmp/crow-fixture/claude-home/projects/-tmp-crow-fixture-b0-toy/id0.jsonl",
+  "cwd": "/tmp/crow-fixture/b0-toy",
+  "prompt_id": "id5",
+  "hook_event_name": "SessionEnd",
+  "reason": "other"
+}

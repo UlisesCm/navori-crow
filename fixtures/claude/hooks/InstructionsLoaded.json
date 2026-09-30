@@ -1,0 +1,9 @@
+{
+  "session_id": "id0",
+  "transcript_path": "/tmp/crow-fixture/claude-home/projects/-tmp-crow-fixture-b0-toy/id0.jsonl",
+  "cwd": "/tmp/crow-fixture/b0-toy",
+  "hook_event_name": "InstructionsLoaded",
+  "file_path": "«str:0»",
+  "memory_type": "Project",
+  "load_reason": "session_start"
+}

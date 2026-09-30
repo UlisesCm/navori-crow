@@ -28,6 +28,8 @@
  */
 import type { Rec } from "@crow/core";
 import { arr, isRec } from "@crow/core";
+import { IdRegistry } from "./shared";
+import type { IdPseudonymizer } from "./shared";
 
 /** One rollout file to anonymize. `relPath` must already be in the canonical
  * `YYYY/MM/DD/rollout-<YYYY-MM-DDTHH-MM-SS>-<threadId>.jsonl` layout
@@ -51,6 +53,15 @@ export interface AnonymizeOptions {
   /** Keeps only the lines up to and including the Nth `event_msg.token_count` of each file (design.md
    * item 2: the 0.145.0 fixture is "recortado a sus primeros `token_count`"). No trimming when omitted. */
   maxTokenCounts?: number;
+  /** Id registry shared with the hook/OTLP anonymizers, so one raw id keeps one pseudonym across lanes.
+   * Default: a fresh registry (ids are only consistent within this run). */
+  ids?: IdPseudonymizer;
+  /** Milliseconds added to every instant. Overrides the `epochIso`-derived offset; use it to share ONE
+   * offset with the hook/OTLP lanes. */
+  tsOffsetMs?: number;
+  /** Extra keys whose string values are ids to pseudonymize instead of markering (e.g. `turn_id`,
+   * `thread_id`, which hooks and OTLP also carry). Default: none. */
+  extraIdKeys?: readonly string[];
 }
 
 const DEFAULT_EPOCH_ISO = "2026-01-01T00:00:00.000Z";
@@ -93,24 +104,23 @@ const ROLLOUT_RE =
 /** Mutable, run-scoped anonymization context: id pseudonyms, free-text markers, the timestamp offset. */
 class AnonCtx {
   readonly newCwd: string;
-  private readonly ids = new Map<string, string>();
-  private idSeq = 0;
+  readonly idKeys: ReadonlySet<string>;
   private markerSeq = 0;
   private keySeq = 0;
   private tsOffsetMs = 0;
 
-  constructor(repo: string) {
+  constructor(
+    repo: string,
+    private readonly ids: IdPseudonymizer,
+    extraIdKeys: readonly string[],
+  ) {
     this.newCwd = `/tmp/crow-fixture/${repo}`;
+    this.idKeys = new Set([...ID_KEYS, ...extraIdKeys]);
   }
 
   /** Same input value -> same pseudonym, for every call across the whole run (every file). */
   pseudonymize(value: string): string {
-    const existing = this.ids.get(value);
-    if (existing !== undefined) return existing;
-    const pseudo = `id${this.idSeq}`;
-    this.idSeq += 1;
-    this.ids.set(value, pseudo);
-    return pseudo;
+    return this.ids.pseudonymize(value);
   }
 
   /** A deterministic, sequential marker for a free-text string. */
@@ -125,6 +135,10 @@ class AnonCtx {
     const m = `«key:${this.keySeq}»`;
     this.keySeq += 1;
     return m;
+  }
+
+  get offsetMs(): number {
+    return this.tsOffsetMs;
   }
 
   setTimestampOffsetMs(offsetMs: number): void {
@@ -147,7 +161,7 @@ function anonymizeField(key: string, value: unknown, ctx: AnonCtx): unknown {
   if (typeof value === "string") {
     if (key === "cwd") return ctx.newCwd;
     if (key === "timestamp") return ctx.shiftTimestamp(value);
-    if (ID_KEYS.has(key)) return ctx.pseudonymize(value);
+    if (ctx.idKeys.has(key)) return ctx.pseudonymize(value);
     if (ALLOWLISTED_STRING_KEYS.has(key)) return value;
     return ctx.marker();
   }
@@ -194,7 +208,7 @@ function anonymizeNode(node: unknown, ctx: AnonCtx): unknown {
 }
 
 /** Scans every envelope's `timestamp` field across every file to find the earliest instant. */
-function findMinTimestampMs(sourceFiles: AnonymizeSourceFile[]): number | null {
+export function findMinTimestampMs(sourceFiles: AnonymizeSourceFile[]): number | null {
   let min: number | null = null;
   for (const f of sourceFiles) {
     for (const rawLine of f.content.split("\n")) {
@@ -262,29 +276,49 @@ function pad2(n: number): string {
   return n < 10 ? `0${n}` : `${n}`;
 }
 
-/** Rewrites `YYYY/MM/DD/rollout-<ts>-<threadId>.jsonl` with the shifted timestamp (both the directory
- * and the filename's embedded date) and the thread id's pseudonym — the same one used everywhere else
- * this thread id occurs (`session_meta.payload.id`, `parent_thread_id`, …), since both go through
- * {@link AnonCtx.pseudonymize}. */
-function anonymizeRelPath(f: AnonymizeSourceFile, ctx: AnonCtx): string {
-  const m = ROLLOUT_RE.exec(f.relPath);
-  if (m === null) {
-    throw new Error(
-      `not a codex rollout relPath (expected YYYY/MM/DD/rollout-...jsonl): ${f.relPath}`,
-    );
-  }
-  const [, , , , fy, fm, fd, fh, fmin, fsec, threadId] = m;
-  const originalIso = `${fy}-${fm}-${fd}T${fh}:${fmin}:${fsec}.000Z`;
-  const shiftedMs = ctx.shiftTimestampMs(originalIso);
-  const shifted = new Date(shiftedMs ?? Date.parse(originalIso));
+/** `rollout-<YYYY-MM-DDTHH-MM-SS>-<threadId>.jsonl` (the file name alone, as found in a hook's `transcript_path`). */
+const ROLLOUT_NAME_RE = /^rollout-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-(.+)\.jsonl$/;
+
+/**
+ * Anonymized `YYYY/MM/DD/rollout-<shifted ts>-<pseudonym>.jsonl` for a rollout FILE NAME: the embedded
+ * instant is shifted by `tsOffsetMs` (both the directory and the file name) and the thread id gets the
+ * pseudonym used everywhere else that thread id occurs (`session_meta.payload.id`, `parent_thread_id`,
+ * hook `session_id`/`agent_id`, …). `null` when `name` is not a rollout file name.
+ */
+export function shiftedRolloutRelPath(
+  name: string,
+  ids: IdPseudonymizer,
+  tsOffsetMs: number,
+): string | null {
+  const m = ROLLOUT_NAME_RE.exec(name);
+  if (m === null) return null;
+  const [, fy, fm, fd, fh, fmin, fsec, threadId] = m;
+  const originalMs = Date.parse(`${fy}-${fm}-${fd}T${fh}:${fmin}:${fsec}.000Z`);
+  if (!Number.isFinite(originalMs)) return null;
+  const shifted = new Date(originalMs + tsOffsetMs);
   const yyyy = shifted.getUTCFullYear();
   const MM = pad2(shifted.getUTCMonth() + 1);
   const DD = pad2(shifted.getUTCDate());
   const HH = pad2(shifted.getUTCHours());
   const mm = pad2(shifted.getUTCMinutes());
   const ss = pad2(shifted.getUTCSeconds());
-  const pseudoThreadId = ctx.pseudonymize(threadId!);
-  return `${yyyy}/${MM}/${DD}/rollout-${yyyy}-${MM}-${DD}T${HH}-${mm}-${ss}-${pseudoThreadId}.jsonl`;
+  return `${yyyy}/${MM}/${DD}/rollout-${yyyy}-${MM}-${DD}T${HH}-${mm}-${ss}-${ids.pseudonymize(threadId!)}.jsonl`;
+}
+
+/** Rewrites `YYYY/MM/DD/rollout-<ts>-<threadId>.jsonl` with the shifted timestamp (both the directory
+ * and the filename's embedded date) and the thread id's pseudonym — the same one used everywhere else
+ * this thread id occurs (`session_meta.payload.id`, `parent_thread_id`, …), since both go through
+ * {@link AnonCtx.pseudonymize}. */
+function anonymizeRelPath(f: AnonymizeSourceFile, ctx: AnonCtx): string {
+  const m = ROLLOUT_RE.exec(f.relPath);
+  const rel =
+    m === null ? null : shiftedRolloutRelPath(f.relPath.split("/").pop()!, ctx, ctx.offsetMs);
+  if (rel === null) {
+    throw new Error(
+      `not a codex rollout relPath (expected YYYY/MM/DD/rollout-...jsonl): ${f.relPath}`,
+    );
+  }
+  return rel;
 }
 
 /**
@@ -296,14 +330,14 @@ export function anonymizeCodexFixture(
   sourceFiles: AnonymizeSourceFile[],
   opts: AnonymizeOptions,
 ): AnonymizeOutputFile[] {
-  const ctx = new AnonCtx(opts.repo);
+  const ctx = new AnonCtx(opts.repo, opts.ids ?? new IdRegistry(), opts.extraIdKeys ?? []);
   const trimmed = sourceFiles.map((f) => ({
     ...f,
     content: trimToMaxTokenCounts(f.content, opts.maxTokenCounts),
   }));
   const epochMs = Date.parse(opts.epochIso ?? DEFAULT_EPOCH_ISO);
   const minMs = findMinTimestampMs(trimmed);
-  ctx.setTimestampOffsetMs(minMs !== null ? epochMs - minMs : 0);
+  ctx.setTimestampOffsetMs(opts.tsOffsetMs ?? (minMs !== null ? epochMs - minMs : 0));
 
   const sorted = [...trimmed].sort((a, b) => a.relPath.localeCompare(b.relPath));
   return sorted.map((f) => ({
