@@ -11,7 +11,16 @@ import { join } from "node:path";
 import { claudeAdapter } from "@crow/adapter-claude";
 import { codexAdapter } from "@crow/adapter-codex";
 import { loadConfig } from "@crow/core";
-import type { ConfigEnv, CrowConfig, LaneCounters, StatsResponse } from "@crow/core";
+import type {
+  ConfigEnv,
+  CrowConfig,
+  LaneCounters,
+  SessionsResponse,
+  StatsResponse,
+} from "@crow/core";
+import { CLAUDE_EVENTS, CODEX_EVENTS, isRecord } from "./attach-common";
+import { isCrowClaudeHandler } from "./claude-config";
+import { isCrowGroup } from "./codex-config";
 
 export const DOCTOR_HELP = `usage: crow doctor [--json]
 
@@ -42,13 +51,41 @@ export interface ContentFlagsReport {
   parseError: string | null;
 }
 
+export interface HooksConfigReport {
+  file: string;
+  exists: boolean;
+  /** Units (events) with a crow handler vs the engine's full list (15 Claude, 10 Codex). */
+  units: { present: number; expected: number; missing: string[] };
+  /** Claude only: how the handler reaches crow; `null` when undetectable or not applicable. */
+  transport: "command" | "http" | null;
+  /** Claude only: `disableAllHooks` is on. */
+  disableAllHooks: boolean;
+  /** Claude only: `allowManagedHooksOnly` is on. */
+  allowManagedHooksOnly: boolean;
+  /** `true` when transport is `command` and `curl` is not in the PATH; else `null`/`false`. */
+  curlMissing: boolean | null;
+  /** The engine's own config has OTLP telemetry configured (names/booleans only, R34). */
+  otlpConfigured: boolean;
+  parseError: string | null;
+}
+
 export interface EngineReport {
-  laneA: { root: string; rootExists: boolean; filesSeen: number; capped: boolean };
+  laneA: {
+    root: string;
+    rootExists: boolean;
+    filesSeen: number;
+    capped: boolean;
+  };
   laneB: {
-    /** TODO(B6.T2): needs the attach entry format (D14). */
-    hooksConfigured: "pending";
-    /** TODO(B6.T2): Codex trust state ("confianza pendiente probable", D15). */
-    trustPending: "pending";
+    /** Crow hook units found in the engine config (read-only inspection, D15). */
+    config: HooksConfigReport;
+    /** Codex live sessions per the server; `null` when unknown (server down) or not Codex. */
+    liveSessions: number | null;
+    /**
+     * Codex "confianza pendiente probable" (D15): units configured, nothing received and live
+     * sessions exist. `null` = unknown (server down) or not applicable (Claude).
+     */
+    trustPending: boolean | null;
     /** `null` when the server is unreachable. */
     counters: LaneCounters | null;
   };
@@ -84,6 +121,8 @@ export interface DoctorDeps {
   /** Resolves `true` when something accepts TCP connections on 127.0.0.1:port. */
   probePort?: (port: number) => Promise<boolean>;
   fetchImpl?: typeof fetch;
+  /** Resolves `true` when `cmd` is in the PATH (default: `Bun.which` over `env.PATH`). */
+  pathLookup?: (cmd: string) => boolean;
 }
 
 /** Quick TCP connect probe on loopback, 500 ms budget. */
@@ -181,6 +220,137 @@ export function inspectCodexFlags(codexHome: string): ContentFlagsReport {
   return report;
 }
 
+function emptyHooksReport(file: string, expected: number): HooksConfigReport {
+  return {
+    file,
+    exists: existsSync(file),
+    units: { present: 0, expected, missing: [] },
+    transport: null,
+    disableAllHooks: false,
+    allowManagedHooksOnly: false,
+    curlMissing: null,
+    otlpConfigured: false,
+    parseError: null,
+  };
+}
+
+function unitsOf(events: readonly string[], hasCrow: (event: string) => boolean) {
+  const missing = events.filter((e) => !hasCrow(e));
+  return {
+    present: events.length - missing.length,
+    expected: events.length,
+    missing,
+  };
+}
+
+/** Claude telemetry pointing at OTLP: only key names and the boolean/exporter checks leave here. */
+function claudeOtlpConfigured(env: Record<string, unknown>): boolean {
+  if (isEnabledValue(env["CLAUDE_CODE_ENABLE_TELEMETRY"])) return true;
+  return Object.entries(env).some(([key, value]) => {
+    if (/^OTEL_EXPORTER_OTLP_.*ENDPOINT$/.test(key)) return true;
+    return (
+      /^OTEL_(METRICS|LOGS|TRACES)_EXPORTER$/.test(key) &&
+      typeof value === "string" &&
+      value.split(",").some((v) => v.trim().toLowerCase() === "otlp")
+    );
+  });
+}
+
+/**
+ * Read-only inspection of Claude `settings.json` for crow's hook units (D15). The managed
+ * settings file is not read: its path is an unverified doc claim (D15 warning), so it is an
+ * open decision rather than a guess.
+ */
+export function inspectClaudeHooks(
+  configDir: string,
+  curlInPath: () => boolean,
+): HooksConfigReport {
+  const report = emptyHooksReport(join(configDir, "settings.json"), CLAUDE_EVENTS.length);
+  if (!report.exists) {
+    report.units = unitsOf(CLAUDE_EVENTS, () => false);
+    return report;
+  }
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(report.file, "utf8"));
+    const settings = isRecord(parsed) ? parsed : {};
+    const hooks = isRecord(settings["hooks"]) ? settings["hooks"] : {};
+    const crowHandlers = (event: string): unknown[] => {
+      const groups = hooks[event];
+      if (!Array.isArray(groups)) return [];
+      return groups
+        .flatMap((g) => (isRecord(g) && Array.isArray(g["hooks"]) ? (g["hooks"] as unknown[]) : []))
+        .filter(isCrowClaudeHandler);
+    };
+    report.units = unitsOf(CLAUDE_EVENTS, (e) => crowHandlers(e).length > 0);
+    for (const event of CLAUDE_EVENTS) {
+      const first = crowHandlers(event)[0];
+      if (isRecord(first)) {
+        report.transport = first["type"] === "http" ? "http" : "command";
+        break;
+      }
+    }
+    report.disableAllHooks = settings["disableAllHooks"] === true;
+    report.allowManagedHooksOnly = settings["allowManagedHooksOnly"] === true;
+    if (report.transport === "command") report.curlMissing = !curlInPath();
+    if (isRecord(settings["env"])) report.otlpConfigured = claudeOtlpConfigured(settings["env"]);
+  } catch {
+    report.parseError = "JSON inválido";
+    report.units = unitsOf(CLAUDE_EVENTS, () => false);
+  }
+  return report;
+}
+
+/** Read-only inspection of Codex `config.toml` for crow's `[[hooks.X.hooks]]` units (D15). */
+export function inspectCodexHooks(codexHome: string): HooksConfigReport {
+  const report = emptyHooksReport(join(codexHome, "config.toml"), CODEX_EVENTS.length);
+  if (!report.exists) {
+    report.units = unitsOf(CODEX_EVENTS, () => false);
+    return report;
+  }
+  try {
+    const parsed = Bun.TOML.parse(readFileSync(report.file, "utf8")) as Record<string, unknown>;
+    const hooks = isRecord(parsed["hooks"]) ? parsed["hooks"] : {};
+    report.units = unitsOf(CODEX_EVENTS, (e) => {
+      const groups = hooks[e];
+      return Array.isArray(groups) && groups.some(isCrowGroup);
+    });
+    const otel = parsed["otel"];
+    if (isRecord(otel)) {
+      report.otlpConfigured = Object.entries(otel).some(
+        ([key, value]) =>
+          /exporter$/.test(key) &&
+          value !== undefined &&
+          !(typeof value === "string" && value.trim().toLowerCase() === "none"),
+      );
+    }
+  } catch {
+    report.parseError = "TOML inválido";
+    report.units = unitsOf(CODEX_EVENTS, () => false);
+  }
+  return report;
+}
+
+/** Live Codex sessions per `/api/sessions?status=live`; `null` when the server does not answer. */
+async function fetchLiveCount(
+  config: CrowConfig,
+  fetchImpl: typeof fetch,
+  engine: Engine,
+): Promise<number | null> {
+  const headers: Record<string, string> = {};
+  if (config.token !== null) headers["Authorization"] = `Bearer ${config.token}`;
+  try {
+    const res = await fetchImpl(`http://127.0.0.1:${config.crowPort}/api/sessions?status=live`, {
+      headers,
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as SessionsResponse;
+    return body.sessions.filter((s) => s.engine === engine).length;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchStats(
   config: CrowConfig,
   fetchImpl: typeof fetch,
@@ -203,7 +373,12 @@ async function fetchStats(
 export async function collectReport(deps: DoctorDeps): Promise<DoctorReport> {
   const config = loadConfig(deps.env, deps.homeDir);
   const probe = deps.probePort ?? probeLoopback;
-  const { stats, error } = await fetchStats(config, deps.fetchImpl ?? fetch);
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const { stats, error } = await fetchStats(config, fetchImpl);
+  const curlInPath =
+    deps.pathLookup ??
+    ((cmd: string): boolean =>
+      Bun.which(cmd, deps.env.PATH !== undefined ? { PATH: deps.env.PATH } : {}) !== null);
   const warnings: string[] = [];
 
   const roots: Record<Engine, string> = {
@@ -214,10 +389,22 @@ export async function collectReport(deps: DoctorDeps): Promise<DoctorReport> {
     claude: inspectClaudeFlags(config.claudeConfigDir),
     codex: inspectCodexFlags(config.codexHome),
   };
+  const hookConfig: Record<Engine, HooksConfigReport> = {
+    claude: inspectClaudeHooks(config.claudeConfigDir, () => curlInPath("curl")),
+    codex: inspectCodexHooks(config.codexHome),
+  };
   const engines = {} as Record<Engine, EngineReport>;
   for (const engine of ENGINES) {
     const { count, capped } = await countJsonl(roots[engine]);
     const laneFiles = { filesSeen: count, capped };
+    const cfg = hookConfig[engine];
+    const counters = stats?.lanes.engines[engine]?.hook ?? null;
+    const liveSessions =
+      engine === "codex" && stats !== null ? await fetchLiveCount(config, fetchImpl, engine) : null;
+    const trustPending =
+      engine !== "codex" || counters === null || liveSessions === null
+        ? null
+        : cfg.units.present > 0 && counters.received === 0 && liveSessions > 0;
     engines[engine] = {
       laneA: {
         root: roots[engine],
@@ -225,9 +412,10 @@ export async function collectReport(deps: DoctorDeps): Promise<DoctorReport> {
         ...laneFiles,
       },
       laneB: {
-        hooksConfigured: "pending", // TODO(B6.T2): detect attach entries once the format is fixed
-        trustPending: "pending", // TODO(B6.T2): Codex trust state
-        counters: stats?.lanes.engines[engine]?.hook ?? null,
+        config: cfg,
+        liveSessions,
+        trustPending,
+        counters,
       },
       contentFlags: flags[engine],
     };
@@ -237,6 +425,47 @@ export async function collectReport(deps: DoctorDeps): Promise<DoctorReport> {
       warnings.push(
         `${engine}: no se pudo leer ${flags[engine].file} (${flags[engine].parseError})`,
       );
+    }
+    if (cfg.parseError === null && cfg.exists) {
+      const { present, expected, missing } = cfg.units;
+      if (present === 0) {
+        warnings.push(
+          `${engine}: ${cfg.file} no tiene unidades de crow; ejecuta \`crow attach ${engine}\``,
+        );
+      } else if (present < expected) {
+        warnings.push(
+          `${engine}: attach parcial o editado, faltan ${missing.length} de ${expected} unidades (${missing.join(", ")})`,
+        );
+      }
+    }
+    if (cfg.disableAllHooks) {
+      warnings.push(`${engine}: disableAllHooks está activo; el motor no ejecuta ningún hook`);
+    }
+    if (cfg.allowManagedHooksOnly) {
+      warnings.push(
+        `${engine}: allowManagedHooksOnly está activo; los hooks de usuario no se ejecutan`,
+      );
+    }
+    if (cfg.curlMissing === true) {
+      warnings.push(`${engine}: curl no está en el PATH; el script de hooks no enviará nada`);
+    }
+    if (trustPending === true) {
+      warnings.push(
+        `${engine}: confianza pendiente probable: hay hooks configurados, ninguno recibido y sesiones vivas; revisa /hooks en Codex`,
+      );
+    }
+    if (cfg.otlpConfigured && !config.otlpEnabled) {
+      warnings.push(
+        `${engine}: el motor tiene OTLP configurado pero crow lo tiene apagado (CROW_OTLP); se perderá ese carril`,
+      );
+    }
+    for (const reason of ["unauthorized", "too-large"] as const) {
+      const n = counters?.rejected[reason] ?? 0;
+      if (n > 0) {
+        warnings.push(
+          `${engine}: ${n} hooks rechazados (${reason}): posibles errores visibles en el motor`,
+        );
+      }
     }
     for (const name of flags[engine].enabled) {
       warnings.push(`${engine}: flag de contenido activo ${name} (registra texto del usuario)`);
@@ -264,7 +493,11 @@ export async function collectReport(deps: DoctorDeps): Promise<DoctorReport> {
   }
 
   return {
-    server: { reachable: stats !== null, url: `http://127.0.0.1:${config.crowPort}`, error },
+    server: {
+      reachable: stats !== null,
+      url: `http://127.0.0.1:${config.crowPort}`,
+      error,
+    },
     engines,
     otlp: {
       configured: config.otlpEnabled,
@@ -297,10 +530,19 @@ export function formatReport(r: DoctorReport): string {
       `  Carril A (archivos): raíz ${e.laneA.rootExists ? "existe" : "NO existe"} (${e.laneA.root}), ${e.laneA.filesSeen}${e.laneA.capped ? "+" : ""} archivos .jsonl`,
     );
     const c = e.laneB.counters;
+    const b = e.laneB.config;
+    const cfgText =
+      b.parseError !== null
+        ? `config ilegible (${b.parseError})`
+        : `hooks configurados ${b.units.present}/${b.units.expected}${b.transport !== null ? `, transporte ${b.transport}` : ""}`;
+    const trustText =
+      engine !== "codex"
+        ? ""
+        : `; confianza: ${e.laneB.trustPending === null ? "desconocida" : e.laneB.trustPending ? "PENDIENTE probable" : "sin señales de pendiente"}`;
     out.push(
       c === null
-        ? "  Carril B (hooks): sin datos del servidor; hooks configurados: pendiente; confianza: pendiente"
-        : `  Carril B (hooks): último recibido ${when(c.lastReceivedAt)}, recibidos ${c.received}, rechazados ${JSON.stringify(c.rejected)}; hooks configurados: pendiente; confianza: pendiente`,
+        ? `  Carril B (hooks): sin datos del servidor; ${cfgText}${trustText}`
+        : `  Carril B (hooks): último recibido ${when(c.lastReceivedAt)}, recibidos ${c.received}, rechazados ${JSON.stringify(c.rejected)}; ${cfgText}${trustText}`,
     );
     const f = e.contentFlags;
     const flagText =
