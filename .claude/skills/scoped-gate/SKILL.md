@@ -11,7 +11,7 @@ metadata:
   maxWords: 750
 ---
 
-<!-- navori:managed id="scoped-gate-base" hash="45693abb" version="0.10.0" source="@navori/core" fmkeys="name,description,metadata" -->
+<!-- navori:managed id="scoped-gate-base" hash="f3d14e5a" version="0.11.0" source="@navori/core" fmkeys="name,description,metadata" -->
 # Scoped gate — diff-scoped quality gate as hygiene, not a seal
 
 ## The problem
@@ -27,20 +27,29 @@ on files the diff never touched. Measured across four repos: three are red on
 Scope the fast check to the files actually in the diff instead of the whole
 tree:
 
-1. Resolve a baseline: `origin/<base>` first, the local ref only as fallback.
+1. Resolve a baseline: `origin/main` first, the local ref only as fallback.
 2. List files in scope: `git diff --name-only <base_sha>` **plus**
    `git ls-files --others --exclude-standard` for untracked files.
 3. Run the linter/formatter against exactly that list.
 
 ```sh
-base_sha=$(git rev-parse --verify --quiet "origin/main^{commit}" || git rev-parse main)
+base='main'
+if git rev-parse --verify --quiet "origin/$base^{commit}" >/dev/null; then
+  base_sha=$(git rev-parse "origin/$base")
+elif git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+  echo "scoped-gate: origin/$base not found; falling back to local ref $base (may be stale)" >&2
+  base_sha=$(git rev-parse "$base")
+else
+  echo "scoped-gate: no ref found for base '$base' (checked origin/$base and $base)" >&2
+  exit 1
+fi
 files=$( { git diff --name-only --diff-filter=ACMRT "$base_sha" -- '*.ts' '*.tsx'; \
            git ls-files --others --exclude-standard -- '*.ts' '*.tsx'; } | sort -u)
 [ -n "$files" ] && eslint $files
 ```
 
-Adapt the pathspec and linter invocation to the repo; the shape (baseline →
-scope → run) is what matters.
+Adapt the pathspec and linter to the repo; the shape (baseline → scope → run)
+matters.
 
 ## Four edge cases — each one cost a real bug to discover
 
@@ -55,7 +64,7 @@ scope → run) is what matters.
   status. Without a sentinel, the gate reports `0 files to scan` and approves
   a tree it never read. Capture the exit code of every listing, not just the
   file list.
-- **Baseline freshness.** Prefer `origin/<base>` over the local ref: an agent
+- **Baseline freshness.** Prefer `origin/main` over the local ref: an agent
   worktree is cut from whatever the base pointed at when it was created and
   never moves again, so the local ref has no freshness guarantee and can
   silently drift behind merged work.

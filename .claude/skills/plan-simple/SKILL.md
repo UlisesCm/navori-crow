@@ -5,12 +5,12 @@ metadata:
   type: reference
 ---
 
-<!-- navori:managed id="plan-simple" hash="8fa4618d" version="0.10.0" source="@navori/core" fmkeys="name,description,metadata" -->
+<!-- navori:managed id="plan-simple" hash="d68f5bb9" version="0.11.0" source="@navori/core" fmkeys="name,description,metadata" -->
 # plan-simple — level-1 workplan
 
 ## Steps
 
-1. Draft `.claude/progress/workplan_<feature>.json`: a one-line observable goal; 1 to 5
+1. Draft `.navori/state/handoffs/workplan_<feature>.json`: a one-line observable goal; 1 to 5
    `A<n>` criteria, each with `command` and `expected`; at least one item out of scope;
    files measured against the repo (`"new": true` for new ones); declared signals.
 2. Run `navori plan classify <feature>` → tell the user the level, score and breakdown in ≤ 4

@@ -1,7 +1,7 @@
 {
   "$navori": {
     "managed": true,
-    "version": "0.10.0",
+    "version": "0.11.0",
     "notes": "Archivo generado por navori. NO editar a mano — los cambios se pierden en el próximo `navori render`. Per-user / per-machine permissions van a settings.local.json (gitignored)."
   },
   "attribution": {
@@ -234,11 +234,15 @@
       "Bash(navori status:*)",
       "Bash(navori audit:*)",
       "Bash(navori receipt:*)",
+      "Bash(navori handoff check:*)",
       "Bash(navori dominio list:*)",
       "Bash(navori dominio show:*)",
       "Bash(navori dominio doctor:*)",
       "Bash(navori plan classify:*)",
       "Bash(navori plan check:*)",
+      "Bash(navori master status:*)",
+      "Bash(navori master check:*)",
+      "Bash(navori master template:*)",
       "Bash(engram save:*)",
       "mcp__engram__*",
       "Bash(bun run lint:*)",
@@ -284,7 +288,13 @@
       "Bash(git stash drop*)",
       "Bash(git stash clear*)",
       "Bash(chmod -R *)",
-      "Bash(engram import *)"
+      "Bash(engram import *)",
+      "Bash(gh issue create:*)",
+      "Bash(navori master init:*)",
+      "Bash(navori master mode:*)",
+      "Bash(navori master advance:*)",
+      "Bash(navori master part:*)",
+      "Bash(navori master close:*)"
     ],
     "deny": [
       "Agent(orchestrator)",

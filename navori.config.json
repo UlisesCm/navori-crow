@@ -17,6 +17,7 @@
   "audit": {
     "mode": "always"
   },
+  "packageManager": "bun",
   "models": {
     "orchestrator": "opus",
     "implementer": "sonnet",
@@ -50,6 +51,6 @@
     "localSkills": [],
     "libraries": [],
     "libraryMigrations": [],
-    "codeLanguage": "unknown"
+    "codeLanguage": "ts"
   }
 }
