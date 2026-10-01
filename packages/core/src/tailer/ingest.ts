@@ -173,6 +173,7 @@ export async function processFile<S extends JsonValue>(
   const nextOffset = capped ? endOffsetOf(entries[entries.length - 1]!) : fullNextOffset;
 
   const pending: PendingEvent[] = [];
+  let unknownEntries = 0;
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let lineNumber = 0;
 
@@ -248,6 +249,8 @@ export async function processFile<S extends JsonValue>(
       continue;
     }
 
+    if (result.unknown === true) unknownEntries += 1;
+
     result.events.forEach((event, index) => {
       pending.push({
         engine: adapter.id,
@@ -290,6 +293,7 @@ export async function processFile<S extends JsonValue>(
       nextOffset,
       state,
       events: pending,
+      unknownEntries,
     },
   );
 

@@ -945,3 +945,74 @@ describe("Codex late link re-homes the OTel ledger (R12, R37, D19 B2)", () => {
     }).toEqual({ day: 20, y: 20, orphanY: 0 });
   });
 });
+
+describe("applyUsage: engine-reported cost (R4, D5)", () => {
+  const base = { input: 1000, output: 500, cacheRead: 0, cacheCreation: 0 };
+
+  function ingestUsage(
+    usage: PartialCrowEvent["usage"],
+    usageKey: string,
+    inputs: { db?: Database; lineHash?: string } = {},
+  ): { db: Database; totals: { costUsd: number; unpricedUsages: number } } {
+    const db = inputs.db ?? freshDb();
+    ingestBatch(db, makeDeps(), {
+      path: "/f",
+      inode: "1",
+      nextOffset: 10,
+      state: null,
+      events: [
+        makePending(
+          { lineHash: inputs.lineHash ?? "h1" },
+          { kind: "assistant.message", usage, usageKey },
+        ),
+      ],
+    });
+    const totals = getSessionDetail(db, "claude:s1")?.session.totals;
+    if (totals === undefined) throw new Error("session missing");
+    return { db, totals };
+  }
+
+  test("engineCostUsd beats the price table", () => {
+    // Covers: R4
+    const table = ingestUsage({ ...base, model: "claude-sonnet-5" }, "k:table").totals.costUsd;
+    expect(table).toBeGreaterThan(0);
+    const { totals } = ingestUsage(
+      { ...base, model: "claude-sonnet-5", engineCostUsd: 123 },
+      "k:e",
+    );
+    expect(totals.costUsd).toBe(123);
+    expect(totals.costUsd).not.toBe(table);
+  });
+
+  test("an absent engineCostUsd falls back to the table", () => {
+    // Covers: R4
+    const a = ingestUsage({ ...base, model: "claude-sonnet-5" }, "k:a").totals;
+    const b = ingestUsage(
+      { ...base, model: "claude-sonnet-5", engineCostUsd: undefined },
+      "k:b",
+    ).totals;
+    expect(b.costUsd).toBe(a.costUsd);
+    expect(b.unpricedUsages).toBe(0);
+  });
+
+  test("no model and no engineCostUsd stays unpriced", () => {
+    // Covers: R4
+    const { totals } = ingestUsage({ ...base }, "k:none");
+    expect(totals.costUsd).toBe(0);
+    expect(totals.unpricedUsages).toBe(1);
+  });
+
+  test("the usageKey delta path does not carry engineCostUsd and prices with the table (residual)", () => {
+    // Covers: R4
+    const first = ingestUsage({ ...base, model: "claude-sonnet-5", engineCostUsd: 100 }, "k:grow");
+    expect(first.totals.costUsd).toBe(100);
+    const grown = { ...base, output: 600, model: "claude-sonnet-5", engineCostUsd: 150 };
+    const { totals } = ingestUsage(grown, "k:grow", { db: first.db, lineHash: "h2" });
+    const tableDelta = ingestUsage(
+      { input: 0, output: 100, cacheRead: 0, cacheCreation: 0, model: "claude-sonnet-5" },
+      "k:ref",
+    ).totals.costUsd;
+    expect(totals.costUsd).toBeCloseTo(100 + tableDelta, 10);
+    expect(totals.costUsd).not.toBe(150);
+  });
+});

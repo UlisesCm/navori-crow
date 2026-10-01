@@ -108,7 +108,14 @@ export interface LineWarning {
 
 /** Outcome of parsing one line: the events it produced, or why it couldn't be parsed. */
 export type LineResult<S extends JsonValue> =
-  | { ok: true; events: PartialCrowEvent[]; warnings?: LineWarning[]; state: S }
+  | {
+      ok: true;
+      events: PartialCrowEvent[];
+      warnings?: LineWarning[];
+      state: S;
+      /** R7: the line was an entry of an unknown type/role; counted in `IngestStats.unknownEntries`. */
+      unknown?: true;
+    }
   | {
       ok: false;
       reason: IngestErrorReason;

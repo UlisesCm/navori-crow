@@ -178,6 +178,7 @@ describe("REST contracts (R25-R27, R33)", () => {
             usageAnomalies: 0,
             laneDuplicates: 0,
             otelLateLinks: 0,
+            unknownEntries: 0,
             errorsByReason: {},
           },
           lanes: {

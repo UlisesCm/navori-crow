@@ -153,3 +153,50 @@ describe("processFile: gone or symlinked files (D5)", () => {
     expect(result.events).toHaveLength(0);
   });
 });
+
+describe("processFile: unknown entries (R7)", () => {
+  test("N lines marked unknown add N to unknownEntries in the same transaction as the offset", async () => {
+    // Covers: R7
+    await withTempDir(async (dir) => {
+      const path = join(dir, "f.jsonl");
+      const lines = [1, 2, 3].map((n) => testLine({ sessionId: "s1", ts: NOW + n, text: `l${n}` }));
+      writeFileSync(path, `${lines.join("\n")}\n`);
+
+      const db = freshDb();
+      const base = makeTestAdapter();
+      // Lines 1 and 3 are "unknown"; line 2 is a normal entry.
+      const adapter: typeof base = {
+        ...base,
+        parseLine(line, state, pos) {
+          const result = base.parseLine(line, state, pos);
+          return result.ok && pos.line !== 2 ? { ...result, unknown: true } : result;
+        },
+      };
+      expect(stats(db).unknownEntries).toBe(0);
+      await processFile({ ...deps(db, new EventBus(), path), adapter });
+
+      expect(stats(db).unknownEntries).toBe(2);
+      expect(getOffset(db, path)?.byteOffset).toBeGreaterThan(0);
+
+      // Nothing new to read: the counter does not move.
+      await processFile({ ...deps(db, new EventBus(), path), adapter });
+      expect(stats(db).unknownEntries).toBe(2);
+
+      // A failing transaction rolls back both the offset and the counter.
+      const db2 = freshDb();
+      let calls = 0;
+      await expect(
+        processFile({
+          ...deps(db2, new EventBus(), path),
+          adapter,
+          nextId: () => {
+            if (++calls > 1) throw new Error("boom");
+            return "01AAAAAAAAAAAAAAAAAAAAAAAA";
+          },
+        }),
+      ).rejects.toThrow("boom");
+      expect(stats(db2).unknownEntries).toBe(0);
+      expect(getOffset(db2, path)).toBeNull();
+    });
+  });
+});

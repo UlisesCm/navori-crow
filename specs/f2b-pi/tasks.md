@@ -55,7 +55,7 @@ Correr pi ya es una decisión tomada (Q10): primero `faux`; llamadas reales solo
     - `packages/core/src/config.test.ts` (`// Covers: R1`): la precedencia y la expansión de `~`.
     - `apps/web/src/lib/reduce/feed.test.ts` (`// Covers: R3`): etiqueta y detalle de `model.change`.
   - Dependencias: ninguna.
-- [ ] **B1.T2** (R4, R7) — Costo del motor y entradas desconocidas.
+- [x] **B1.T2** (R4, R7) — Costo del motor y entradas desconocidas.
   - Archivos:
     - `packages/core/src/crow-event.ts`: `CrowEventUsage.engineCostUsd?`.
     - `packages/core/src/store/store.ts`: `applyUsage` usa `usage.engineCostUsd ?? computeCostUsd(usage)`; `ingestBatch` acepta `unknownEntries` y suma `unknown_entries` en la misma transacción; `stats()` lee `unknown_entries`.
