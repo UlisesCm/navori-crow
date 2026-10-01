@@ -77,6 +77,8 @@ export interface IngestStats {
   laneDuplicates: number;
   /** Late Codex thread links that moved OTel usage from `codex:<thread>` to the root session (D19). */
   otelLateLinks: number;
+  /** Entries of an unknown type/role the adapters skipped (R7). */
+  unknownEntries: number;
   errorsByReason: Partial<Record<IngestErrorReason, number>>;
 }
 

@@ -19,6 +19,10 @@ export interface CrowConfig {
   allowedOrigins: string[];
   claudeConfigDir: string;
   codexHome: string;
+  /** R1: pi agent dir (`PI_CODING_AGENT_DIR`, else `~/.pi/agent`). */
+  piAgentDir: string;
+  /** R1: pi session root (`PI_CODING_AGENT_SESSION_DIR` > `<piAgentDir>/sessions`). */
+  piSessionDir: string;
   /** R3: ingest token (`CROW_TOKEN`, else `$CROW_HOME/token`); `null` = no token configured. */
   token: string | null;
   /** R34: OTLP lane opt-in; off unless flag, `CROW_OTLP` or `config.json` enables it. */
@@ -104,7 +108,14 @@ export interface LineWarning {
 
 /** Outcome of parsing one line: the events it produced, or why it couldn't be parsed. */
 export type LineResult<S extends JsonValue> =
-  | { ok: true; events: PartialCrowEvent[]; warnings?: LineWarning[]; state: S }
+  | {
+      ok: true;
+      events: PartialCrowEvent[];
+      warnings?: LineWarning[];
+      state: S;
+      /** R7: the line was an entry of an unknown type/role; counted in `IngestStats.unknownEntries`. */
+      unknown?: true;
+    }
   | {
       ok: false;
       reason: IngestErrorReason;

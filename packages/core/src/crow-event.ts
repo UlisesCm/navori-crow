@@ -5,6 +5,7 @@
 export type EngineId =
   | "claude"
   | "codex"
+  | "pi"
   | "gemini"
   | "opencode"
   | "aider"
@@ -28,8 +29,9 @@ export type EventKind =
   | "hook" // harness hook with verdict/duration
   | "permission" // request/decision
   | "compact"
+  | "model.change" // engine switched provider/model
   | "instructions.loaded" // CLAUDE.md/AGENTS.md/skill
-  | "usage" // aggregated tokens/cost (OTel)
+  | "usage" // usage outside an assistant message (OTel ledger or engine entries)
   | "api.request"
   | "turn.end" // Stop / StopFailure (R32)
   | "revision" // D5: corrected fact for an earlier event
@@ -60,6 +62,14 @@ export interface CrowEventUsage {
   costUsd?: number;
   /** Stamped by core with the ported navori-harness formula (R21). */
   weightedTokens?: number;
+  /** Engine-reported USD cost for this usage (pi `usage.cost.total` when > 0). Core prefers it to the price table (R4). */
+  engineCostUsd?: number;
+}
+
+/** Provider/model selected by a `model.change` event. */
+export interface CrowEventModel {
+  provider?: string;
+  id: string;
 }
 
 /** Harness hook details attached to `hook` events. */
@@ -133,6 +143,7 @@ export type IngestErrorReason =
   | "queue-overflow"
   | "unattributable"
   | "invariant"
+  | "unsupported-version"
   | "store-error";
 
 /** Error details attached to `tool.error` / `ingest.error` events. */
@@ -174,4 +185,5 @@ export interface CrowEvent {
   turn?: CrowEventTurn;
   reported?: CrowEventReported;
   revision?: CrowEventRevision;
+  model?: CrowEventModel; // model.change
 }

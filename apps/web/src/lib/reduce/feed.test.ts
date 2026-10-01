@@ -293,3 +293,18 @@ describe("describeEvent for the F2a kinds (D16)", () => {
     expect(state.value.events[0]!.tool?.verdict).toBe("deny");
   });
 });
+
+describe("model.change (D17)", () => {
+  // Covers: R3
+  test("label is Modelo; detail is provider/id, or just id without provider", () => {
+    const withProvider = ev(1, {
+      kind: "model.change",
+      engine: "pi",
+      model: { provider: "openai", id: "gpt-5" },
+    });
+    expect(kindLabel(withProvider)).toBe("Modelo");
+    expect(describeEvent(withProvider)).toBe("openai/gpt-5");
+    const bare = ev(2, { kind: "model.change", engine: "pi", model: { id: "gpt-5" } });
+    expect(describeEvent(bare)).toBe("gpt-5");
+  });
+});

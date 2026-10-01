@@ -487,7 +487,7 @@ function applyUsage(
   ts: number,
   sign: 1 | -1 = 1,
 ): CrowEventUsage {
-  const priced = computeCostUsd(usage);
+  const priced = usage.engineCostUsd ?? computeCostUsd(usage);
   const weighted = weightedTokens(usage, usage.model ?? null);
   const positive = totalsParams(usage, priced, weighted);
   // `0 - x` (not `-x`) so a zero component stays +0 in the stored JSON and in equality checks.
@@ -998,6 +998,8 @@ export interface IngestBatchInput {
   nextOffset: number;
   state: JsonValue;
   events: PendingEvent[];
+  /** R7: lines of unknown type/role in this step; added to `ingest_stats.unknown_entries` with the offsets. */
+  unknownEntries?: number;
 }
 
 /** Dependencies {@link ingestBatch} needs but must not read for itself (testability). */
@@ -1598,6 +1600,9 @@ export function ingestBatch(
        ON CONFLICT(path) DO UPDATE SET inode = excluded.inode, byte_offset = excluded.byte_offset,
          state_json = excluded.state_json, updated_at = excluded.updated_at`,
     ).run(input.path, input.inode, input.nextOffset, JSON.stringify(input.state), deps.now());
+    if (input.unknownEntries !== undefined && input.unknownEntries > 0) {
+      incrementStat(db, "unknown_entries", input.unknownEntries);
+    }
   });
 
   run.immediate();
@@ -1668,6 +1673,7 @@ export function stats(db: Database): IngestStats {
     usageAnomalies: 0,
     laneDuplicates: 0,
     otelLateLinks: 0,
+    unknownEntries: 0,
     errorsByReason: {},
   };
   for (const row of rows) {
@@ -1675,6 +1681,7 @@ export function stats(db: Database): IngestStats {
     else if (row.name === "usage_anomalies") result.usageAnomalies = row.value;
     else if (row.name === "lane_duplicates") result.laneDuplicates = row.value;
     else if (row.name === "otel_late_links") result.otelLateLinks = row.value;
+    else if (row.name === "unknown_entries") result.unknownEntries = row.value;
     else if (row.name.startsWith("errors:")) {
       const reason = row.name.slice("errors:".length) as IngestErrorReason;
       result.errorsByReason[reason] = row.value;
