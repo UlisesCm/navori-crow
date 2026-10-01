@@ -454,6 +454,8 @@ describe("startApp: opt-in and busy port (R15, R34)", () => {
       allowedOrigins: [],
       claudeConfigDir: join(dir, "claude"),
       codexHome: join(dir, "codex"),
+      piAgentDir: join(dir, "pi"),
+      piSessionDir: join(dir, "pi", "sessions"),
       token: null,
       otlpEnabled: false,
       otlpPort: 0,

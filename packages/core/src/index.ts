@@ -50,6 +50,7 @@ export type {
   CrowEventCompact,
   CrowEventHook,
   CrowEventPermission,
+  CrowEventModel,
   CrowEventReported,
   CrowEventRevision,
   CrowEventTurn,

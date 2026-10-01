@@ -126,3 +126,39 @@ describe("adapter contract (type-level)", () => {
     expect(withNew.fromOtel?.(rec).ok).toBe(true);
   });
 });
+
+describe("pi directories", () => {
+  // Covers: R1
+  test("defaults to ~/.pi/agent and its sessions", () => {
+    const h = home();
+    const c = loadConfig({}, h);
+    expect(c.piAgentDir).toBe(join(h, ".pi", "agent"));
+    expect(c.piSessionDir).toBe(join(h, ".pi", "agent", "sessions"));
+  });
+  // Covers: R1
+  test("PI_CODING_AGENT_DIR moves both, sessions under it", () => {
+    const c = loadConfig({ PI_CODING_AGENT_DIR: "/x/agent" }, home());
+    expect(c.piAgentDir).toBe("/x/agent");
+    expect(c.piSessionDir).toBe(join("/x/agent", "sessions"));
+  });
+  // Covers: R1
+  test("PI_CODING_AGENT_SESSION_DIR wins over the agent dir", () => {
+    const env = { PI_CODING_AGENT_DIR: "/x/agent", PI_CODING_AGENT_SESSION_DIR: "/y/s" };
+    const c = loadConfig(env, home());
+    expect(c.piAgentDir).toBe("/x/agent");
+    expect(c.piSessionDir).toBe("/y/s");
+  });
+  // Covers: R1
+  test("leading ~ is expanded against the given home", () => {
+    const h = home();
+    const c = loadConfig({ PI_CODING_AGENT_DIR: "~/a", PI_CODING_AGENT_SESSION_DIR: "~" }, h);
+    expect(c.piAgentDir).toBe(join(h, "a"));
+    expect(c.piSessionDir).toBe(h);
+  });
+  // Covers: R1
+  test("blank env values count as unset", () => {
+    const h = home();
+    const c = loadConfig({ PI_CODING_AGENT_DIR: " ", PI_CODING_AGENT_SESSION_DIR: "" }, h);
+    expect(c.piSessionDir).toBe(join(h, ".pi", "agent", "sessions"));
+  });
+});

@@ -21,6 +21,8 @@ function testConfig(dir: string, overrides: Partial<CrowConfig> = {}): CrowConfi
     allowedOrigins: [],
     claudeConfigDir: join(dir, "claude"), // empty: no real Claude root is ever read
     codexHome: join(dir, "codex"),
+    piAgentDir: join(dir, "pi"),
+    piSessionDir: join(dir, "pi", "sessions"),
     token: null,
     otlpEnabled: false,
     otlpPort: 4318,

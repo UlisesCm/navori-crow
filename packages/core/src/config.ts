@@ -78,6 +78,18 @@ function portFrom(raw: string | undefined): number | undefined {
   return n > 0 && n < 65536 ? n : undefined;
 }
 
+/** Expands a leading `~` (alone or `~/`) to `homeDir`; other paths pass through. */
+function expandHome(path: string, homeDir: string): string {
+  if (path === "~") return homeDir;
+  return path.startsWith("~/") ? join(homeDir, path.slice(2)) : path;
+}
+
+/** R1: trimmed, `~`-expanded env path; `undefined` when absent or blank. */
+function envPath(raw: string | undefined, homeDir: string): string | undefined {
+  const v = raw?.trim();
+  return v ? expandHome(v, homeDir) : undefined;
+}
+
 /**
  * Builds a {@link CrowConfig} from `env` and `homeDir`. This is the **only**
  * place in the codebase that reads `env`/`homedir` for these settings
@@ -90,6 +102,7 @@ export function loadConfig(
 ): CrowConfig {
   const crowHome = env["CROW_HOME"]?.trim() || join(homeDir, ".crow"); // R1, R3
   const file = readOtlpFile(crowHome);
+  const piAgentDir = envPath(env["PI_CODING_AGENT_DIR"], homeDir) ?? join(homeDir, ".pi", "agent"); // R1
   return {
     crowHome,
     crowPort: positiveInt(env["CROW_PORT"], 7777),
@@ -98,6 +111,10 @@ export function loadConfig(
     allowedOrigins: csv(env["CROW_ALLOWED_ORIGINS"]), // R28
     claudeConfigDir: env["CLAUDE_CONFIG_DIR"]?.trim() || join(homeDir, ".claude"), // R11
     codexHome: env["CODEX_HOME"]?.trim() || join(homeDir, ".codex"), // R14
+    piAgentDir,
+    // R1: PI_CODING_AGENT_SESSION_DIR > PI_CODING_AGENT_DIR/sessions > ~/.pi/agent/sessions.
+    piSessionDir:
+      envPath(env["PI_CODING_AGENT_SESSION_DIR"], homeDir) ?? join(piAgentDir, "sessions"),
     token: resolveToken(env, crowHome), // R3
     // R34: precedence flag > env > config.json > off.
     otlpEnabled: overrides.otlp ?? envFlag(env["CROW_OTLP"]) ?? file.enabled ?? false,

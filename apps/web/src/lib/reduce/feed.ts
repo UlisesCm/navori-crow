@@ -193,6 +193,7 @@ const KIND_LABELS: Record<string, string> = {
   hook: "Hook",
   permission: "Permiso",
   compact: "Compactación",
+  "model.change": "Modelo",
   "turn.end": "Fin de turno",
   "instructions.loaded": "Instrucciones",
   usage: "Uso",
@@ -275,6 +276,11 @@ export function describeEvent(e: CrowEvent): string {
       const r = e.reported;
       const cost = r?.costUsd === undefined ? undefined : usd.format(r.costUsd);
       return join([r?.model ?? e.usage?.model, ms(r?.ms), cost]);
+    }
+    case "model.change": {
+      const m = e.model;
+      if (m === undefined) return e.text ?? "";
+      return m.provider === undefined || m.provider === "" ? m.id : `${m.provider}/${m.id}`;
     }
     default:
       break;

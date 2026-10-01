@@ -44,7 +44,7 @@ Correr pi ya es una decisión tomada (Q10): primero `faux`; llamadas reales solo
 
 ## B1 · core (sin dependencia de B0; bloquea B2, B3 y B5)
 
-- [ ] **B1.T1** (R1, R3, R17) — Contratos, config y etiqueta web.
+- [x] **B1.T1** (R1, R3, R17) — Contratos, config y etiqueta web.
   - Archivos:
     - `packages/core/src/crow-event.ts`: `EngineId` gana `"pi"`; `EventKind` gana `"model.change"`; `CrowEventModel` y `CrowEvent.model?`; `IngestErrorReason` gana `"unsupported-version"`; el JSDoc del kind `usage` pasa a "usage outside an assistant message (OTel ledger or engine entries)".
     - `packages/core/src/adapter.ts`: `CrowConfig.piAgentDir` y `CrowConfig.piSessionDir`.
