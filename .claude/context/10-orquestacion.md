@@ -1,4 +1,4 @@
-<!-- navori:managed id="orquestacion" hash="51120ae0" version="0.11.0" source="@navori/core" -->
+<!-- navori:managed id="orquestacion" hash="fb64032e" version="0.11.0" source="@navori/core" -->
 ## Role: orchestrator (every change goes through the harness)
 
 You are the main agent. **Every change to source goes through `implementer` → `reviewer`. There is no inline route and no threshold to judge.** You **embody** the orchestrator role: **you decompose, you coordinate, you synthesize** — but you **NEVER delegate that role**: **do not invoke `Agent(subagent_type: orchestrator)`**. `.claude/agents/orchestrator.md` is a depth reference, not a subagent; delegating it serializes work.
@@ -23,9 +23,9 @@ You are the main agent. **Every change to source goes through `implementer` → 
 - **Planning precondition:** remains independent and mandatory before an `implementer`; neither a missing handoff nor the consumer check bypasses plan approval.
 - **1 focused `implementer`** with an explicit scope (no SDD state), then **1 fresh `reviewer`**. Serial — the reviewer depends on the implementer's output.
 - **Review AFTER implementing, never before.**
-- **Parallel `implementer`s only on disjoint files** (when in doubt, serial).
+- **Parallel `implementer`s only on disjoint files.**
 - **`bun run check` green** is the reviewer's Pass 2, over the diff that ships.
-- **A verification brief names the probe criterion**, never an open "verify X"; track a long agent by its on-disk artifact, not only `done ->`.
+- **A verification brief names the probe criterion**, never an open "verify X"; track long agents by their on-disk artifact.
 
 ### How much analysis does this task deserve (signal → mechanism)
 
@@ -44,15 +44,19 @@ Reading depth:
 | Already audited in this session, or trivial (typo, copy, color) | none extra — reuse the artifact, don't re-audit. **The change still goes through `implementer` → `reviewer`** |
 | Nothing above fires | none extra — go straight to the `implementer` |
 
-**The architectural pass — design before you decompose.** When the architectural row fires, the task earns a solution pass first: `architect` applies `solution-design` and writes `solution_<scope>.md` → ONE fresh-context challenge (an `auditor`, not a new agent) → your verdict READY / CONCERNS / BLOCKED — always yours, proposer and challenger never decide it. It runs BEFORE plan approval — never a licence to pause mid-execution; `CONCERNS` never blocks. An exact existing pattern with a local change and a trivial rollback does not need it.
+**The architectural pass — design before you decompose.** When the architectural row fires, the task earns a solution pass first: `architect` applies `solution-design` and writes `solution_<scope>.md` → ONE fresh-context challenge (an `auditor`, not a new agent) → your verdict READY / CONCERNS / BLOCKED — always yours, proposer and challenger never decide it. It runs BEFORE plan approval, never a pause mid-execution; `CONCERNS` never blocks. An exact existing pattern with a local change and trivial rollback does not need it.
 
 ### Analytical parallelism (the lever — mechanical, not optional)
 
-Emit **ALL `Agent` calls in a SINGLE turn** — Claude serializes by default; parallelism must be requested explicitly. **Independent** sub-tasks (no shared state, no output dependency) → same turn; serialize only on a real dependency (`implementer` → `reviewer`). Assign explicit scope before fanning out; synthesis is **never** delegated — read the N `done -> file` reports together and cross-check them.
+Emit **ALL `Agent` calls in a SINGLE turn** — Claude serializes by default; parallelism must be requested explicitly. **Independent** sub-tasks (no shared state, no output dependency) → same turn; serialize only on a real dependency (`implementer` → `reviewer`). Assign explicit scope first; synthesis is **never** delegated — read the N `done -> file` reports together and cross-check them.
+
+### Nested dispatch unavailable
+
+Without nested dispatch (Codex, `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`), run `scout` before the `architect`.
 
 ### When delegation is genuinely impossible
 
-Rare, and it must leave a trace: the operator forbade subagents, or the `Agent` tool is unavailable. Then you do the work and **say why in your reply** — the `publisher` will require `bun run check` green from you in pre-flight, since there is no review to trust. An undeclared inline change is a deviation, not a shortcut.
+Rare, and it must leave a trace: the operator forbade subagents, or `Agent` is unavailable. Then you do the work and **say why in your reply** — the `publisher` will require `bun run check` green from you in pre-flight, since there is no review to trust. An undeclared inline change is a deviation, not a shortcut.
 
 ### Where the depth lives (read it when the moment asks)
 

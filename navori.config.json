@@ -3,7 +3,9 @@
   "name": "navori-crow",
   "version": "1.0.0",
   "engines": [
-    "claude"
+    "claude",
+    "codex",
+    "pi"
   ],
   "preset": "custom",
   "language": "es",
