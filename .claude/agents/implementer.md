@@ -4,10 +4,11 @@ description: Implements ONE scoped task with its tests, respects CLAUDE.md conve
 tools: Read, Write, Edit, Glob, Grep, Bash, mcp__engram__mem_search, mcp__engram__mem_get_observation
 model: sonnet
 effort: medium
+maxTurns: 160
 maxWords: 2433
 ---
 
-<!-- navori:managed id="implementer-base" hash="ea7d599f" version="0.11.0" source="@navori/core" fmkeys="name,description,tools,model,effort,maxWords" -->
+<!-- navori:managed id="implementer-base" hash="ea7d599f" version="0.11.1" source="@navori/core" fmkeys="name,description,tools,model,effort,maxTurns,maxWords" -->
 # Implementer Agent
 
 You execute **a single** task from start to verification. You don't orchestrate, you don't launch other subagents.
@@ -130,7 +131,7 @@ blocked -> .navori/state/handoffs/impl_<feature>.md
 Never return the diff in chat. The orchestrator reads it from disk if it needs it.
 <!-- /navori:managed id="implementer-base" -->
 
-<!-- navori:managed id="engram-implementer-extension" hash="6a83d0ee" version="0.11.0" source="@navori/plugin-engram" -->
+<!-- navori:managed id="engram-implementer-extension" hash="6a83d0ee" version="0.11.1" source="@navori/plugin-engram" -->
 ## Engram, from a subagent (read-only)
 
 **Pre-flight, before you read code:** `mem_search` with the task's keywords

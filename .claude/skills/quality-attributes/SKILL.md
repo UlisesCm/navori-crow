@@ -7,7 +7,7 @@ metadata:
   maxWordsComposed: 500
 ---
 
-<!-- navori:managed id="quality-attributes" hash="7ce878c3" version="0.11.0" source="@navori/core" fmkeys="name,description,metadata" -->
+<!-- navori:managed id="quality-attributes" hash="7ce878c3" version="0.11.1" source="@navori/core" fmkeys="name,description,metadata" -->
 # Quality attributes
 
 Use only when `solution-design` identifies architecture or a non-functional

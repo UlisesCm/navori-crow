@@ -7,7 +7,7 @@ effort: xhigh
 maxWords: 3050
 ---
 
-<!-- navori:managed id="orchestrator-base" hash="c3eeab3d" version="0.11.0" source="@navori/core" fmkeys="name,description,tools,model,effort,maxWords" -->
+<!-- navori:managed id="orchestrator-base" hash="c3eeab3d" version="0.11.1" source="@navori/core" fmkeys="name,description,tools,model,effort,maxWords" -->
 # Orchestrator Playbook (embodied by the main agent)
 
 > This file is a **depth reference** — the orchestrator role **is embodied by the main agent**, not a subagent. The essential mechanics (escalation table, parallelism, synthesis) live in the "## Role: orchestrator" block, which the `SessionStart` hook delivers to the session, not to a subagent: only the main agent can act on it. Below: extended detail and the **Project rules**. Do NOT invoke `Agent(subagent_type: orchestrator)`.
@@ -168,7 +168,7 @@ Restates nothing already in "## Role: orchestrator" (edit source, write source, 
 If the task is a pure reading / conceptual question → answer directly, no subagents. Everything else that touches source goes through `implementer` → `reviewer` — see the top of this file: there is no size or path exception.
 <!-- /navori:managed id="orchestrator-base" -->
 
-<!-- navori:managed id="engram-orchestrator-extension" hash="35efaabd" version="0.11.0" source="@navori/plugin-engram" -->
+<!-- navori:managed id="engram-orchestrator-extension" hash="35efaabd" version="0.11.1" source="@navori/plugin-engram" -->
 ## Engram (persistent memory)
 
 - **Session start:** engram's `SessionStart` hook covers `startup`/`clear`/`compact`, not `resume`. Where memory is already injected, `mem_context` only re-fetches it. Where it is NOT — a resumed session or a host with no startup hook (e.g. Codex) — that call IS the memory startup and it's the mandatory first step.
@@ -181,7 +181,7 @@ If the task is a pure reading / conceptual question → answer directly, no suba
 - **Auto Memory vs. engram**: Auto Memory holds personal preferences; engram holds durable knowledge. Never write the same fact to both.
 <!-- /navori:managed id="engram-orchestrator-extension" -->
 
-<!-- navori:managed id="codex-cross-review" hash="3407b4bc" version="0.11.0" source="@navori/core" -->
+<!-- navori:managed id="codex-cross-review" hash="3407b4bc" version="0.11.1" source="@navori/core" -->
 ## Cross-model review (Codex second opinion)
 
 For a second opinion from a **different provider**, after `reviewer` approves a non-trivial diff—or for a critical-area change—you MAY ask Codex to review it against `AGENTS.md`:

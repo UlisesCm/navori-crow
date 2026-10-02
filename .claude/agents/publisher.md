@@ -7,7 +7,7 @@ effort: low
 maxWords: 3800
 ---
 
-<!-- navori:managed id="publisher-base" hash="ef54a9e2" version="0.11.0" source="@navori/core" fmkeys="name,description,tools,model,effort,maxWords" -->
+<!-- navori:managed id="publisher-base" hash="ef54a9e2" version="0.11.1" source="@navori/core" fmkeys="name,description,tools,model,effort,maxWords" -->
 # Publisher Agent
 
 You own the **end of the cycle**: well-structured commits in the configured style and PRs with a title + body that match the repo's format. You run pre-flight, validate, and fire `git`/`gh`. You don't edit project code.

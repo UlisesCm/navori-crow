@@ -1,7 +1,7 @@
 {
   "$navori": {
     "managed": true,
-    "version": "0.11.0",
+    "version": "0.11.1",
     "notes": "Archivo generado por navori. NO editar a mano — los cambios se pierden en el próximo `navori render`. Per-user / per-machine permissions van a settings.local.json (gitignored)."
   },
   "attribution": {
@@ -48,6 +48,17 @@
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/subagent-no-background.sh\"",
             "timeout": 10,
             "statusMessage": "navori: subagent-no-background"
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/general-purpose-confirm.sh\"",
+            "timeout": 10,
+            "statusMessage": "navori: general-purpose-confirm"
           }
         ]
       }
@@ -130,6 +141,19 @@
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/subagent-stop-handoff.sh\"",
             "timeout": 15,
             "statusMessage": "navori: handoff check"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/bash-outcome-watch.sh\"",
+            "timeout": 10,
+            "statusMessage": "navori: repeat failure advice"
           }
         ]
       }

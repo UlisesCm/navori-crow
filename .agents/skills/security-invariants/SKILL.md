@@ -6,7 +6,7 @@ metadata:
   maxWords: 1200
 ---
 
-<!-- navori:managed id="security-invariants-base" hash="8a08c119" version="0.11.0" source="@navori/core" fmkeys="name,description,metadata" -->
+<!-- navori:managed id="security-invariants-base" hash="8a08c119" version="0.11.1" source="@navori/core" fmkeys="name,description,metadata" -->
 # Security invariants — the business security layer
 
 Feeds the `/security-review` flow and is the single owner of the security checklist for `reviewer` and `auditor`. `semgrep` is an OPT-IN plugin, not a given, so the business invariants below (authorization, IDOR, trust) sit next to a compact fallback list (§7) for the generic patterns a scanner would otherwise catch.

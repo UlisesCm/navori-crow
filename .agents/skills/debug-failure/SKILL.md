@@ -13,7 +13,7 @@ metadata:
   maxWords: 850
 ---
 
-<!-- navori:managed id="debug-failure-base" hash="74e93458" version="0.11.0" source="@navori/core" fmkeys="name,description,metadata" -->
+<!-- navori:managed id="debug-failure-base" hash="74e93458" version="0.11.1" source="@navori/core" fmkeys="name,description,metadata" -->
 # Debug failure — the one cycle
 
 A failure is not a mandate to change code. This skill forces diagnosis before any fix, and forces a hypothesis re-check when the fix doesn't clear the symptom.
