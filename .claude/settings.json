@@ -50,17 +50,6 @@
             "statusMessage": "navori: subagent-no-background"
           }
         ]
-      },
-      {
-        "matcher": ".*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/model-advisor.sh\" claude-pre-tool-use",
-            "timeout": 10,
-            "statusMessage": "navori: model advisor"
-          }
-        ]
       }
     ],
     "SessionStart": [
@@ -98,6 +87,18 @@
         ]
       }
     ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/model-advisor.sh\" claude-stop",
+            "timeout": 10,
+            "statusMessage": "navori: model advisor"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Bash|Edit|Write|NotebookEdit",
@@ -115,8 +116,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/routing-watch.sh\"",
-            "timeout": 10,
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/routing-watch.sh\" claude-post-tool-use",
+            "timeout": 30,
             "statusMessage": "navori: routing check"
           }
         ]
@@ -235,6 +236,7 @@
       "Bash(navori audit:*)",
       "Bash(navori receipt:*)",
       "Bash(navori handoff check:*)",
+      "Bash(navori handoff log-review:*)",
       "Bash(navori dominio list:*)",
       "Bash(navori dominio show:*)",
       "Bash(navori dominio doctor:*)",
@@ -292,6 +294,7 @@
       "Bash(gh issue create:*)",
       "Bash(navori master init:*)",
       "Bash(navori master mode:*)",
+      "Bash(navori master ux:*)",
       "Bash(navori master advance:*)",
       "Bash(navori master part:*)",
       "Bash(navori master close:*)"

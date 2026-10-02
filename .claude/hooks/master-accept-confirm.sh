@@ -1,8 +1,9 @@
-# navori:managed start id="master-accept-confirm-base" hash="f9182c56" version="0.11.0" source="@navori/core"
+# navori:managed start id="master-accept-confirm-base" hash="2dce757b" version="0.11.0" source="@navori/core"
 #!/usr/bin/env bash
 #
 # PreToolUse(Bash): a manual acceptance (`navori master part … --approved-by`)
-# must be confirmed by the person whose approval it records (spec 0034 R62).
+# or a `navori master close` must be confirmed by the person whose approval it
+# records (spec 0034 R62, spec 0039 R58).
 #
 # This is deliberately an interruption, not a parser for the command. The CLI
 # validates the complete flag contract; this hook keeps the human in the loop
@@ -55,7 +56,7 @@ extract_cmd() {
 
 # Every matching command needs this literal token, so its absence from the raw
 # payload proves this hook cannot apply and avoids parsing the payload at all.
-TRIGGER_TOKENS='approved-by'
+TRIGGER_TOKENS='approved-by navori master'
 # Shared gate detector — inlined into each hook at render time (see the include
 # directive in the source scripts + lib/render/hook-includes.ts). The caller MUST set
 # $TRIGGER_RE (an ERE) before the include; it decides which git ops this hook
@@ -576,14 +577,25 @@ trap navori_audit_on_exit EXIT
 # Same boundary as D6/R43: a command after `&&`, `;`, `|`, in a subshell or a
 # command substitution is still visible. `is_scan_trigger` keeps the flag in
 # the same compound-command segment, so an unrelated later `--approved-by`
-# cannot turn an earlier command into a confirmation prompt.
+# cannot turn an earlier command into a confirmation prompt. `navori` may be
+# bare, run via npx/bunx/pnpm exec|dlx, or a path ending in `/navori`.
+# `--approved-by` takes `=` or a space; `close` is gated in all its forms.
 BOUND='(^|[;&|(`]|[[:space:]])'
-TRIGGER_RE=".*${BOUND}navori[[:space:]]+master[[:space:]]+part([[:space:]]|\$).*--approved-by([[:space:]=]|\$)"
+RUNNER='((npx|bunx|pnpm[[:space:]]+(exec|dlx))[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)?'
+NAVORI="${RUNNER}([^[:space:];&|(\`]*/)?navori(@[^[:space:]]+)?"
+PART_RE="${NAVORI}[[:space:]]+master[[:space:]]+part([[:space:]]|\$).*--approved-by([[:space:]=]|\$)"
+CLOSE_RE="${NAVORI}[[:space:]]+master[[:space:]]+close([[:space:];&|)<>]|\$)"
+TRIGGER_RE=".*${BOUND}(${PART_RE}|${CLOSE_RE})"
+# A command substitution starts a new command: make it a segment of its own so
+# the `VAR=$(` prefix peeling in the shared scan cannot swallow it.
+navori_subst='$('
+navori_semi='; '
+cmd="${cmd//"$navori_subst"/$navori_semi}"
 is_scan_trigger "$cmd" || exit 0
 
 # Fixed by construction: no repository content reaches JSON, so this still
 # works when jq and node are unavailable.
 navori_audit_verdict="ask"
-navori_audit_reason="manual criterion acceptance"
+navori_audit_reason="manual approval or stage close"
 printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"[navori] this records that you approved a manual criterion. Confirm only if you reviewed it."}}'
 # navori:managed end id="master-accept-confirm-base"

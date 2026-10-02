@@ -1,6 +1,6 @@
 ---
 name: orchestrator
-description: Do NOT invoke as a subagent, never and under no condition. Orchestration playbook that the main agent EMBODIES (the "## Role: orchestrator" block, delivered to the session by the SessionStart hook); open it as a depth reference instead. Delegating it serializes the work and kills parallelism.
+description: 'Do NOT invoke as a subagent, never and under no condition. Orchestration playbook that the main agent EMBODIES (the "## Role: orchestrator" block, delivered to the session by the SessionStart hook); open it as a depth reference instead. Delegating it serializes the work and kills parallelism.'
 tools: Read, Glob, Grep, Bash, Agent, mcp__engram__mem_search, mcp__engram__mem_get_observation, mcp__engram__mem_context, mcp__engram__mem_save, mcp__engram__mem_session_summary, mcp__engram__mem_update
 model: opus
 effort: xhigh
@@ -180,6 +180,22 @@ If the task is a pure reading / conceptual question → answer directly, no suba
 - **Lean close**: the summary and the curation step are exempt; `mem_save` is not.
 - **Auto Memory vs. engram**: Auto Memory holds personal preferences; engram holds durable knowledge. Never write the same fact to both.
 <!-- /navori:managed id="engram-orchestrator-extension" -->
+
+<!-- navori:managed id="codex-cross-review" hash="3407b4bc" version="0.11.0" source="@navori/core" -->
+## Cross-model review (Codex second opinion)
+
+For a second opinion from a **different provider**, after `reviewer` approves a non-trivial diff—or for a critical-area change—you MAY ask Codex to review it against `AGENTS.md`:
+
+```bash
+codex exec "revisa el diff origin/main...HEAD según los estándares del repo; inspecciona sin editar archivos ni hacer commits"
+```
+
+- Plain root `codex exec` does not select `.codex/agents/reviewer.toml`; its prompt is not a read-only boundary. Effective permissions and approvals depend on Codex configuration and host policy. Full Access can modify files and use the network; do not assume isolation or approvals.
+- Authentication uses normal (possibly custom) `CODEX_HOME`, `CODEX_API_KEY`, or prior `codex login`; no credentials are copied. Do not pin `--model`.
+- **Advisory, not a gate:** weigh findings against `reviewer`; they do not block the PR.
+
+Use for `criticalAreas`, high-blast-radius changes, or user-requested cross-checks—not trivial diffs.
+<!-- /navori:managed id="codex-cross-review" -->
 
 ## Project rules
 

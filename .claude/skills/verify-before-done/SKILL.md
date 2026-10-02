@@ -1,6 +1,6 @@
 ---
 name: verify-before-done
-description: Use when about to declare a task done — the Iron Law of task closure: no success claim without fresh evidence from the command that backs it. Applies to implementer, reviewer, publisher and any response that declares "done".
+description: 'Use when about to declare a task done — the Iron Law of task closure: no success claim without fresh evidence from the command that backs it. Applies to implementer, reviewer, publisher and any response that declares "done".'
 metadata:
   type: behavior
   maxWords: 650
