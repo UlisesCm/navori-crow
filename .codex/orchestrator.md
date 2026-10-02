@@ -1,4 +1,4 @@
-<!-- navori:managed id="orchestrator-codex-base" hash="6eef0d21" version="0.11.0" source="@navori/core" -->
+<!-- navori:managed id="orchestrator-codex-base" hash="6eef0d21" version="0.11.1" source="@navori/core" -->
 # Orchestrator Playbook (embodied by the main agent)
 
 > This file is a **depth reference** — the orchestrator role **is embodied by the main agent**, not a subagent. The essential mechanics (escalation table, parallelism, synthesis) live in the "## Role: orchestrator" block, which `AGENTS.md` supplies to the main thread: only the main agent can act on it. Below: extended detail and the **Project rules**. Do NOT invoke `spawn_agent(orchestrator)`.

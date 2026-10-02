@@ -6,7 +6,7 @@ metadata:
   type: reference
 ---
 
-<!-- navori:managed id="context-intake" hash="7884e947" version="0.11.0" source="@navori/core" fmkeys="name,description,disable-model-invocation,metadata" -->
+<!-- navori:managed id="context-intake" hash="7884e947" version="0.11.1" source="@navori/core" fmkeys="name,description,disable-model-invocation,metadata" -->
 # Intake manual de contexto
 
 Esta skill solo se ejecuta después de que el usuario la invoque explícitamente. Primero corre:

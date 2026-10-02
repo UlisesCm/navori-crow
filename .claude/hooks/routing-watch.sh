@@ -1,4 +1,4 @@
-# navori:managed start id="routing-watch-base" hash="c33896d5" version="0.11.0" source="@navori/core"
+# navori:managed start id="routing-watch-base" hash="433be318" version="0.11.1" source="@navori/core"
 #!/usr/bin/env bash
 #
 # PostToolUse routing watcher (spec 0020).
@@ -318,6 +318,100 @@ navori_json_str() {
   s=${s//\\/\\\\}
   s=${s//\"/\\\"}
   printf '%s' "$s"
+}
+
+# Repeat-failure state is shared by the PostToolUseFailure watcher and the
+# existing success lane. A successful Bash call only pays for Node when its
+# session already has a failure-state file; ordinary calls use builtins only.
+navori_bash_failure_state() {
+  local action=$1 sid=${CLAUDE_CODE_SESSION_ID:-} dir file
+  case "$sid" in "" | *[!A-Za-z0-9._-]*) return 0 ;; esac
+  [ -n "${nv_project_dir:-}" ] || return 0
+  dir=$nv_project_dir/.navori/state/hooks/bash-outcome-watch
+  file=$dir/$sid
+  if [ "$action" = reset ]; then
+    [ -f "$file" ] && [ ! -L "$file" ] || return 0
+  fi
+  command -v node >/dev/null 2>&1 || return 0
+  NV_BASH_OUTCOME_ACTION=$action NV_BASH_OUTCOME_DIR=$dir NV_BASH_OUTCOME_FILE=$file \
+    NV_BASH_OUTCOME_ROOT=$nv_project_dir node -e '
+const fs = require("node:fs");
+const path = require("node:path");
+const crypto = require("node:crypto");
+const digest = (value) => crypto.createHash("sha256").update(value).digest("hex");
+const env = process.env;
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  try {
+    const payload = JSON.parse(input);
+    if (payload.tool_name !== "Bash" || payload.session_id !== env.CLAUDE_CODE_SESSION_ID) return;
+    if (payload.is_interrupt === true || payload.tool_response?.is_interrupt === true) return;
+    const command = payload.tool_input?.command;
+    const cwd = payload.cwd;
+    if (typeof command !== "string" || !command.trim() || typeof cwd !== "string" || !cwd) return;
+    const agent = typeof payload.agent_id === "string" ? payload.agent_id : "";
+    const key = digest(JSON.stringify([command.trim().replace(/\s+/g, " "), cwd, agent]));
+    const root = path.resolve(env.NV_BASH_OUTCOME_ROOT);
+    const dir = env.NV_BASH_OUTCOME_DIR;
+    const file = env.NV_BASH_OUTCOME_FILE;
+    if (dir !== path.join(root, ".navori/state/hooks/bash-outcome-watch")) return;
+    for (const component of [root, path.join(root, ".navori"), path.join(root, ".navori/state"), path.join(root, ".navori/state/hooks"), dir]) {
+      if (fs.existsSync(component)) {
+        if (!fs.lstatSync(component).isDirectory() || fs.lstatSync(component).isSymbolicLink()) return;
+      } else if (env.NV_BASH_OUTCOME_ACTION === "failure") {
+        fs.mkdirSync(component);
+      } else return;
+    }
+    if (fs.existsSync(file) && (!fs.lstatSync(file).isFile() || fs.lstatSync(file).isSymbolicLink())) return;
+    let rows = fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+    if (!Array.isArray(rows) || rows.some((row) => typeof row.key !== "string" || typeof row.sig !== "string" || typeof row.count !== "number" || typeof row.epoch !== "number")) return;
+    if (env.NV_BASH_OUTCOME_ACTION === "reset") {
+      const next = rows.filter((row) => row.key !== key);
+      if (next.length === rows.length) return;
+      rows = next;
+    } else {
+      const error = payload.error;
+      if (typeof error !== "string") return;
+      const match = /exit code\s+(\d+)/i.exec(error);
+      if (!match) return;
+      const code = match[1];
+      const escapedRoot = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const home = env.HOME ? env.HOME.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : null;
+      const body = error.replace(/^.*exit code\s+\d+.*\r?\n?/im, "")
+        .replace(/\x1b\[[0-9;]*m/g, "")
+        .replace(new RegExp(escapedRoot, "g"), "<root>")
+        .replace(home ? new RegExp(home, "g") : /\b(?!x)x\b/g, "~")
+        .replace(/(?:\/tmp|\/private\/tmp|\/var\/folders)\/[^\s:]+/g, "<tmp>")
+        .replace(/\b\d{4}-\d\d-\d\d[T ]\d\d:\d\d:\d\d(?:\.\d+)?Z?\b/g, "<t>")
+        .replace(/\b\d\d:\d\d:\d\d(?:\.\d+)?\b/g, "<t>")
+        .replace(/\b\d+(?:\.\d+)?\s?(?:ms|seconds?|minutes?)\b/gi, "<d>")
+        .replace(/\b[0-9a-f]{8,}\b/gi, "<h>")
+        .split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 20).join("\n");
+      if (!body) return;
+      const sig = digest(code + "\n" + body);
+      const previous = rows.find((row) => row.key === key);
+      const count = previous?.sig === sig ? Math.min(previous.count + 1, 3) : 1;
+      const notified = previous?.sig === sig && previous.notified === true;
+      rows = rows.filter((row) => row.key !== key);
+      rows.push({ key, sig, count, notified: notified || count === 3, epoch: Date.now() });
+      if (count === 3 && !notified) {
+        const first = body.split("\n")[0].slice(0, 100);
+        const note = `navori: el comando ${command.trim().slice(0, 100)} falló 3 veces con la misma firma (exit ${code}: ${first}). Cambia de enfoque con debug-failure o escala al usuario. Si el rojo es intencional, ignora esta nota.`;
+        var output = note.slice(0, 400);
+      }
+    }
+    rows.sort((a, b) => b.epoch - a.epoch);
+    rows = rows.slice(0, 50);
+    const temp = file + "." + process.pid + ".tmp";
+    fs.writeFileSync(temp, rows.map((row) => JSON.stringify(row)).join("\n") + (rows.length ? "\n" : ""), { flag: "wx", mode: 0o600 });
+    fs.renameSync(temp, file);
+    if (output) process.stdout.write(output + "\n");
+  } catch { /* advisory: never change the tool result */ }
+});
+' <<< "$payload" 2>/dev/null || true
+  return 0
 }
 
 # Called by `routing-watch.sh` once it knows the tool is `Bash`, and only under
@@ -790,6 +884,7 @@ esac
 # is fail-open, fast-exits with builtins when no pending criterion's command is
 # in the payload, and writes one complete line with a single `printf >>` or none.
 if [ "$tool" = "Bash" ] && [ "${1:-}" = "claude-post-tool-use" ]; then
+  navori_bash_failure_state reset
   navori_bash_success_lane
 fi
 

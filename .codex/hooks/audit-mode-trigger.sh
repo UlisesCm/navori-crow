@@ -1,4 +1,4 @@
-# navori:managed start id="audit-mode-trigger-base" hash="7b4935ef" version="0.11.0" source="@navori/core"
+# navori:managed start id="audit-mode-trigger-base" hash="7b4935ef" version="0.11.1" source="@navori/core"
 #!/usr/bin/env bash
 # navori — audit-mode prompt recorder (UserPromptSubmit)
 #

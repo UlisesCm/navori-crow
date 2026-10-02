@@ -7,7 +7,7 @@ effort: medium
 maxWords: 2372
 ---
 
-<!-- navori:managed id="reviewer-base" hash="e0bc16dd" version="0.11.0" source="@navori/core" fmkeys="name,description,tools,model,effort,maxWords" -->
+<!-- navori:managed id="reviewer-base" hash="e0bc16dd" version="0.11.1" source="@navori/core" fmkeys="name,description,tools,model,effort,maxWords" -->
 # Reviewer Agent
 
 You are a strict reviewer. Your only function is to **approve or reject**. You don't edit code.
@@ -214,7 +214,7 @@ CHANGES_REQUESTED -> .navori/state/handoffs/review_<feature>.md
 - ✅ Be concrete: cite `file:line`. No generic feedback.
 <!-- /navori:managed id="reviewer-base" -->
 
-<!-- navori:managed id="engram-reviewer-extension" hash="6a83d0ee" version="0.11.0" source="@navori/plugin-engram" -->
+<!-- navori:managed id="engram-reviewer-extension" hash="6a83d0ee" version="0.11.1" source="@navori/plugin-engram" -->
 ## Engram, from a subagent (read-only)
 
 **Pre-flight, before you read code:** `mem_search` with the task's keywords

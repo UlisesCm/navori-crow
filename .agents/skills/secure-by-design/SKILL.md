@@ -7,7 +7,7 @@ metadata:
   maxWordsComposed: 650
 ---
 
-<!-- navori:managed id="secure-by-design-base" hash="5c3cf2db" version="0.11.0" source="@navori/core" fmkeys="name,description,metadata" -->
+<!-- navori:managed id="secure-by-design-base" hash="5c3cf2db" version="0.11.1" source="@navori/core" fmkeys="name,description,metadata" -->
 # Secure by design
 
 This is a thin router, not a second security checklist. It composes with

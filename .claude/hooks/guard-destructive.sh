@@ -1,4 +1,4 @@
-# navori:managed start id="guard-destructive-base" hash="c6363b62" version="0.11.0" source="@navori/core"
+# navori:managed start id="guard-destructive-base" hash="3838f006" version="0.11.1" source="@navori/core"
 #!/usr/bin/env bash
 #
 # Defensive PreToolUse(Bash) guard.
@@ -828,6 +828,10 @@ if [ "${#cmd}" -le "$FAST_MAX" ]; then
   _fast=${_fast//"${_nl}"/}
   case "$_fast" in
     *commit*|*push*|*rm*|*sed*|*tee*|*'/dev/'*|*'>'*|*':('*) ;;
+    # Search verbs: not destructive, but the user section below is where a plugin
+    # lane (tgrep's search routing, spec 0039 D6) inspects them, and this early exit
+    # would never let it run. `rg` needs a word edge: `*rg*` would match `merge`.
+    *grep*|*rg\ *|*rg) ;;
     *)
       navori_audit_verdict="skip"
       navori_audit_reason="no rule token in the command"

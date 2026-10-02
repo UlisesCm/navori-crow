@@ -1,6 +1,6 @@
 # .gitignore gestionado por navori. El bloque de abajo se regenera con 'navori render';
 # edita fuera de él con libertad.
 
-# navori:managed start id="nested-gitignore-harness" hash="b57acca2" version="0.11.0" source="@navori/core"
+# navori:managed start id="nested-gitignore-harness" hash="b57acca2" version="0.11.1" source="@navori/core"
 state/
 # navori:managed end id="nested-gitignore-harness"

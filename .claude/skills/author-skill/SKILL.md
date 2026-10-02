@@ -5,7 +5,7 @@ metadata:
   type: reference
 ---
 
-<!-- navori:managed id="author-skill" hash="ea564e60" version="0.11.0" source="@navori/core" fmkeys="name,description,metadata" -->
+<!-- navori:managed id="author-skill" hash="ea564e60" version="0.11.1" source="@navori/core" fmkeys="name,description,metadata" -->
 # Authoring a skill
 
 A skill loads by its `description` and costs tokens on every activation, so it carries only what the model can't know: this repo's rules, version traps, failure modes, exact commands.

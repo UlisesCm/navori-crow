@@ -7,7 +7,7 @@ metadata:
   maxWordsComposed: 550
 ---
 
-<!-- navori:managed id="follow-up-prs" hash="d60d723e" version="0.11.0" source="@navori/core" fmkeys="name,description,metadata" -->
+<!-- navori:managed id="follow-up-prs" hash="d60d723e" version="0.11.1" source="@navori/core" fmkeys="name,description,metadata" -->
 # follow-up-prs — pick up what happened after the PR
 
 ## When to use this skill
