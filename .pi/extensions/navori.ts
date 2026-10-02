@@ -1,4 +1,4 @@
-// navori:managed-file id="pi-extension" hash="bd3ca185106caeb1f5580f97aac68bba1766cd8fe442156b7a35118c782980ed"
+// navori:managed-file id="pi-extension" hash="ec423a438be33730db4e0cdaa5d5ee1b1cdbb0c00a4ae2331e4a1293da97ae8b"
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -16,11 +16,7 @@ function assertTrustedPiParent(ctx: { isProjectTrusted?: () => boolean }): void 
   if (!trusted) throw new Error("Navori Pi subagent requires a trusted parent project");
 }
 
-const MIN_PI_VERSION = "0.87.1";
-const MIN_NODE_VERSION = "22.19.0";
-function XT(e){let t=/^v?(\d+)\.(\d+)\.(\d+)(?:\+[\w.-]+)?$/.exec(e.trim());if(!t)return null;let n=Number(t[1]),r=Number(t[2]),i=Number(t[3]);return[n,r,i].every(Number.isSafeInteger)?[n,r,i]:null}
-function QT(e,t){return e[0]===t[0]?e[1]===t[1]?e[2]>=t[2]:e[1]>t[1]:e[0]>t[0]}
-function $T(e,t=process.versions.node){let n=XT(t);if(!n||!QT(n,[22,19,0]))throw Error(`Navori's Pi engine requires Node.js ${YT} or later; found ${t}.`);let r=XT(e);if(!r||!QT(r,[0,87,1]))throw Error(`Navori's Pi engine requires @earendil-works/pi-coding-agent ${JT} or later; found ${e}. Run pi --version and upgrade Pi.`)}
+const assertSupportedPiRuntime = (function(e,t){function n(e){let t=/^v?(\d+)\.(\d+)\.(\d+)(?:\+[\w.-]+)?$/.exec(e.trim());if(!t)return null;let n=Number(t[1]),r=Number(t[2]),i=Number(t[3]);return[n,r,i].every(Number.isSafeInteger)?[n,r,i]:null}function r(e,t){return e[0]===t[0]?e[1]===t[1]?e[2]>=t[2]:e[1]>t[1]:e[0]>t[0]}return(i,a=process.versions.node)=>{let o=n(a),s=n(t);if(!o||!s||!r(o,s))throw Error(`Navori's Pi engine requires Node.js ${t} or later; found ${a}.`);let c=n(i),l=n(e);if(!c||!l||!r(c,l))throw Error(`Navori's Pi engine requires @earendil-works/pi-coding-agent ${e} or later; found ${i}. Run pi --version and upgrade Pi.`)}})("0.87.1", "22.19.0");
 
 
 type Role = "scout" | "implementer" | "reviewer";
